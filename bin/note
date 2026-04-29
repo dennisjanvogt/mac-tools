@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+
+# Quick Note CLI
+# Usage: note [command] [args]
+# Notes stored as Markdown in ~/Documents/Notizen/
+
+NOTE_DIR="$HOME/Documents/Notizen"
+mkdir -p "$NOTE_DIR"
+
+usage() {
+    cat <<'EOF'
+Quick Note CLI
+
+Usage: note <command> [args]
+
+Notizen:
+  add <text>            Schnellnotiz erstellen (Datum als Dateiname)
+  add -t <titel> <text> Notiz mit eigenem Titel
+  edit <datei>          Notiz in $EDITOR öffnen (Teilmatch)
+  show <datei>          Notiz anzeigen (Teilmatch)
+  delete <datei>        Notiz löschen (Teilmatch)
+
+Übersicht:
+  list                  Alle Notizen (neueste zuerst)
+  search <query>        Volltextsuche
+  today                 Heutige Notizen
+  recent                Letzte 10 Notizen
+
+Tags:
+  tag <datei> <tag>     Tag zu Notiz hinzufügen
+  tags [tag]            Alle Tags / Notizen mit Tag anzeigen
+
+Info:
+  help                  Diese Hilfe
+
+Kurzformen: a=add, e=edit, l=list, s=search, r=recent
+
+Ohne Argument: list
+EOF
+}
+
+match_file() {
+    local query=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    find "$NOTE_DIR" -name "*.md" -maxdepth 1 | while IFS= read -r f; do
+        base=$(basename "$f" | tr '[:upper:]' '[:lower:]')
+        if [[ "$base" == *"$query"* ]]; then
+            echo "$f"
+            return
+        fi
+    done
+}
+
+case "${1:-list}" in
+    add|a)
+        shift
+        if [ "$1" = "-t" ]; then
+            shift
+            title="$1"
+            shift
+            text="$*"
+        else
+            title=$(date "+%Y-%m-%d_%H%M")
+            text="$*"
+        fi
+        [ -z "$text" ] && echo "Usage: note add <text>" && exit 1
+        safe=$(echo "$title" | sed 's/[^a-zA-Z0-9äöüÄÖÜß_-]/_/g')
+        file="$NOTE_DIR/${safe}.md"
+        # Append if file exists, create otherwise
+        if [ -f "$file" ]; then
+            echo "" >> "$file"
+            echo "$text" >> "$file"
+            echo "Ergänzt: $safe.md"
+        else
+            echo "# $title" > "$file"
+            echo "" >> "$file"
+            echo "$text" >> "$file"
+            echo "Erstellt: $safe.md"
+        fi
+        ;;
+    edit|e)
+        [ -z "$2" ] && echo "Usage: note edit <dateiname-teil>" && exit 1
+        shift
+        match=$(match_file "$*")
+        if [ -z "$match" ]; then
+            echo "Nicht gefunden: $*"
+            exit 1
+        fi
+        ${EDITOR:-vim} "$match"
+        ;;
+    show)
+        [ -z "$2" ] && echo "Usage: note show <dateiname-teil>" && exit 1
+        shift
+        match=$(match_file "$*")
+        if [ -z "$match" ]; then
+            echo "Nicht gefunden: $*"
+            exit 1
+        fi
+        if command -v glow >/dev/null 2>&1; then
+            glow "$match"
+        elif command -v bat >/dev/null 2>&1; then
+            bat --style=plain "$match"
+        else
+            cat "$match"
+        fi
+        ;;
+    delete)
+        [ -z "$2" ] && echo "Usage: note delete <dateiname-teil>" && exit 1
+        shift
+        match=$(match_file "$*")
+        if [ -z "$match" ]; then
+            echo "Nicht gefunden: $*"
+            exit 1
+        fi
+        name=$(basename "$match")
+        read -p "Löschen: $name? (j/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[jJyY]$ ]]; then
+            rm "$match"
+            echo "Gelöscht: $name"
+        else
+            echo "Abgebrochen."
+        fi
+        ;;
+    list|l)
+        count=$(find "$NOTE_DIR" -name "*.md" -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
+        echo "Notizen ($count in $NOTE_DIR):"
+        find "$NOTE_DIR" -name "*.md" -maxdepth 1 -exec stat -f '%m %N' {} \; 2>/dev/null | sort -rn | while read -r _ f; do
+            name=$(basename "$f" .md)
+            first=$(head -3 "$f" | grep -v "^#" | grep -v "^$" | head -1)
+            if [ -n "$first" ]; then
+                echo "  $name — ${first:0:60}"
+            else
+                echo "  $name"
+            fi
+        done
+        ;;
+    search|s)
+        [ -z "$2" ] && echo "Usage: note search <query>" && exit 1
+        shift
+        echo "Suche: $*"
+        grep -ril "$*" "$NOTE_DIR"/*.md 2>/dev/null | while IFS= read -r f; do
+            name=$(basename "$f" .md)
+            line=$(grep -i "$*" "$f" | head -1)
+            echo "  $name: ${line:0:70}"
+        done
+        ;;
+    today)
+        today=$(date "+%Y-%m-%d")
+        echo "Notizen von heute ($today):"
+        find "$NOTE_DIR" -name "${today}*" -maxdepth 1 2>/dev/null | while IFS= read -r f; do
+            echo "  $(basename "$f" .md)"
+        done
+        count=$(find "$NOTE_DIR" -name "${today}*" -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
+        [ "$count" = "0" ] && echo "  (keine)"
+        ;;
+    recent|r)
+        echo "Letzte 10 Notizen:"
+        find "$NOTE_DIR" -name "*.md" -maxdepth 1 -exec stat -f '%m %N' {} \; 2>/dev/null | sort -rn | head -10 | while read -r _ f; do
+            name=$(basename "$f" .md)
+            mod=$(stat -f '%Sm' -t '%Y-%m-%d' "$f" 2>/dev/null)
+            echo "  $mod  $name"
+        done
+        ;;
+    tag)
+        [ -z "$2" ] || [ -z "$3" ] && echo "Usage: note tag <dateiname-teil> <tag>" && exit 1
+        match=$(match_file "$2")
+        if [ -z "$match" ]; then
+            echo "Nicht gefunden: $2"
+            exit 1
+        fi
+        tag="$3"
+        name=$(basename "$match" .md)
+        # Check if file has frontmatter
+        first_line=$(head -1 "$match")
+        if [ "$first_line" = "---" ]; then
+            # Check if tags: already exists
+            if grep -q "^tags:" "$match"; then
+                # Add tag to existing tags list
+                python3 -c "
+import sys
+lines = open('$match').readlines()
+out = []
+added = False
+for l in lines:
+    out.append(l)
+    if not added and l.strip().startswith('tags:'):
+        out.append('  - $tag\n')
+        added = True
+open('$match', 'w').writelines(out)
+"
+            else
+                # Add tags: before closing ---
+                python3 -c "
+lines = open('$match').readlines()
+out = []
+found_end = False
+for i, l in enumerate(lines):
+    if i > 0 and l.strip() == '---' and not found_end:
+        out.append('tags:\n')
+        out.append('  - $tag\n')
+        found_end = True
+    out.append(l)
+open('$match', 'w').writelines(out)
+"
+            fi
+        else
+            # No frontmatter — prepend
+            python3 -c "
+content = open('$match').read()
+fm = '---\ntags:\n  - $tag\n---\n'
+open('$match', 'w').write(fm + content)
+"
+        fi
+        echo "Tag '$tag' → $name"
+        ;;
+    tags)
+        if [ -z "$2" ]; then
+            # Show all tags with counts
+            echo "Tags:"
+            find "$NOTE_DIR" -name "*.md" -maxdepth 1 -exec grep -h '  - ' {} \; 2>/dev/null | sed 's/^  - //' | sort | uniq -c | sort -rn | while read -r count tag; do
+                echo "  $tag ($count)"
+            done
+        else
+            # Show notes with specific tag
+            tag="$2"
+            echo "Notizen mit Tag '$tag':"
+            find "$NOTE_DIR" -name "*.md" -maxdepth 1 | while IFS= read -r f; do
+                if grep -q "  - $tag" "$f" 2>/dev/null; then
+                    echo "  $(basename "$f" .md)"
+                fi
+            done
+        fi
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

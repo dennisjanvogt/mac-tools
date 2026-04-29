@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+
+# Bluetooth CLI
+# Usage: bt [command] [args]
+# Requires: blueutil (brew install blueutil)
+
+usage() {
+    cat <<'EOF'
+Bluetooth CLI
+
+Usage: bt <command> [args]
+
+Geräte:
+  list                  Alle bekannten Geräte anzeigen
+  paired                Nur gekoppelte Geräte
+  connected             Nur verbundene Geräte
+  connect <mac|name>    Gerät verbinden
+  disconnect <mac|name> Gerät trennen
+  switch <mac|name>     Trennt alle Audio-Geräte, verbindet das angegebene
+
+Power:
+  on                    Bluetooth einschalten
+  off                   Bluetooth ausschalten
+  status                Bluetooth-Status anzeigen
+  toggle                Bluetooth ein/aus umschalten
+
+Batterie:
+  battery               Batterie-Level aller Geräte
+
+Info:
+  info <mac|name>       Geräte-Info anzeigen
+  help                  Diese Hilfe anzeigen
+
+Kurzformen: l=list, c=connect, d=disconnect, s=status, bat=battery
+EOF
+}
+
+require_blueutil() {
+    command -v blueutil >/dev/null 2>&1 || { echo "blueutil nicht installiert. brew install blueutil"; exit 1; }
+}
+
+# Resolve name to MAC address
+resolve() {
+    local query=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    # If already a MAC address pattern, return as-is
+    if [[ "$query" =~ ^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$ ]]; then
+        echo "$1"
+        return
+    fi
+    # Search paired devices by name
+    local mac
+    mac=$(blueutil --paired --format json 2>/dev/null | python3 -c "
+import sys,json
+q='$query'
+devs=json.load(sys.stdin)
+for d in devs:
+    if q in d.get('name','').lower():
+        print(d['address']); break
+else:
+    print('NOT_FOUND')
+" 2>/dev/null)
+    if [ "$mac" = "NOT_FOUND" ] || [ -z "$mac" ]; then
+        echo "Gerät nicht gefunden: $1" >&2
+        exit 1
+    fi
+    echo "$mac"
+}
+
+device_name() {
+    blueutil --paired --format json 2>/dev/null | python3 -c "
+import sys,json
+devs=json.load(sys.stdin)
+for d in devs:
+    if d['address']=='$1':
+        print(d.get('name','Unbekannt')); break
+else:
+    print('$1')
+" 2>/dev/null
+}
+
+require_blueutil
+
+case "${1:-status}" in
+    list|l)
+        blueutil --paired --format json 2>/dev/null | python3 -c "
+import sys,json
+devs=json.load(sys.stdin)
+if not devs:
+    print('Keine gekoppelten Geräte.')
+else:
+    for d in devs:
+        c='●' if d.get('connected') else '○'
+        print(f'  {c} {d[\"name\"]:30s} {d[\"address\"]}')"
+        ;;
+    paired)
+        blueutil --paired --format json 2>/dev/null | python3 -c "
+import sys,json
+devs=json.load(sys.stdin)
+for d in devs:
+    print(f'  {d[\"name\"]:30s} {d[\"address\"]}')"
+        ;;
+    connected)
+        blueutil --connected --format json 2>/dev/null | python3 -c "
+import sys,json
+devs=json.load(sys.stdin)
+if not devs:
+    print('Keine verbundenen Geräte.')
+else:
+    for d in devs:
+        print(f'  ● {d[\"name\"]:30s} {d[\"address\"]}')"
+        ;;
+    connect|c)
+        [ -z "$2" ] && echo "Usage: bt connect <mac oder name>" && exit 1
+        shift; mac=$(resolve "$*")
+        name=$(device_name "$mac")
+        blueutil --connect "$mac" 2>/dev/null
+        echo "Verbunden: $name"
+        ;;
+    disconnect|d)
+        [ -z "$2" ] && echo "Usage: bt disconnect <mac oder name>" && exit 1
+        shift; mac=$(resolve "$*")
+        name=$(device_name "$mac")
+        blueutil --disconnect "$mac" 2>/dev/null
+        echo "Getrennt: $name"
+        ;;
+    switch)
+        [ -z "$2" ] && echo "Usage: bt switch <mac oder name>" && exit 1
+        shift; mac=$(resolve "$*")
+        name=$(device_name "$mac")
+        # Disconnect all currently connected audio devices first
+        blueutil --connected --format json 2>/dev/null | python3 -c "
+import sys,json,subprocess
+devs=json.load(sys.stdin)
+for d in devs:
+    if d['address']!='$mac':
+        subprocess.run(['blueutil','--disconnect',d['address']],capture_output=True)
+" 2>/dev/null
+        blueutil --connect "$mac" 2>/dev/null
+        echo "Gewechselt zu: $name"
+        ;;
+    on)
+        blueutil --power 1
+        echo "Bluetooth an"
+        ;;
+    off)
+        blueutil --power 0
+        echo "Bluetooth aus"
+        ;;
+    toggle)
+        current=$(blueutil --power)
+        if [ "$current" = "1" ]; then
+            blueutil --power 0
+            echo "Bluetooth aus"
+        else
+            blueutil --power 1
+            echo "Bluetooth an"
+        fi
+        ;;
+    status|s)
+        power=$(blueutil --power)
+        if [ "$power" = "1" ]; then
+            count=$(blueutil --connected --format json 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null)
+            echo "Bluetooth: AN | $count Gerät(e) verbunden"
+        else
+            echo "Bluetooth: AUS"
+        fi
+        ;;
+    battery|bat)
+        system_profiler SPBluetoothDataType 2>/dev/null | python3 -c "
+import sys, re
+text = sys.stdin.read()
+# Split into device sections
+sections = re.split(r'\n\s{10}(\S[^\n:]+):\s*\n', text)
+found = False
+for i in range(1, len(sections), 2):
+    name = sections[i].strip()
+    body = sections[i+1] if i+1 < len(sections) else ''
+    batts = re.findall(r'(\w+)\s+Battery Level:\s*(\d+)\s*%', body)
+    if batts:
+        found = True
+        parts = []
+        for label, pct in batts:
+            if label in ('Left','Right','Case'):
+                parts.append(f'{label[0]}: {pct}%')
+            else:
+                parts.append(f'{pct}%')
+        print(f'  {name:30s} {\"  \".join(parts)}')
+if not found:
+    print('Keine Batterie-Daten verfügbar.')
+"
+        ;;
+    info)
+        [ -z "$2" ] && echo "Usage: bt info <mac oder name>" && exit 1
+        shift; mac=$(resolve "$*")
+        blueutil --info "$mac" --format json 2>/dev/null | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+c='verbunden' if d.get('connected') else 'getrennt'
+p='gekoppelt' if d.get('paired') else 'nicht gekoppelt'
+print(f'''  Name:    {d.get('name','?')}
+  MAC:     {d['address']}
+  Status:  {c}, {p}')"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

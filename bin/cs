@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+
+# Check System - Display available CLI tools
+# Usage: cs
+
+C='\033[0;36m' G='\033[0;32m' WH='\033[1;37m' GR='\033[0;90m' N='\033[0m'
+COL_W=52
+
+pad() {
+    local text="$1" width="$2"
+    local stripped=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local len=${#stripped}
+    local spaces=$((width - len))
+    [ $spaces -lt 0 ] && spaces=0
+    printf "%s%*s" "$text" "$spaces" ""
+}
+
+# Collect installed tools per section into temp files
+TMP=$(mktemp -d)
+TOOL_COUNT=0
+
+add() {
+    local section="$1" tool="$2" desc="$3"
+    if command -v "$tool" >/dev/null 2>&1; then
+        echo -e "  ${G}✓${N} ${WH}${tool}${N}  ${GR}${desc}${N}" >> "$TMP/$section"
+        ((TOOL_COUNT++))
+    fi
+}
+
+add dev git "Version control"
+add dev node "JavaScript runtime"
+add dev npm "Node.js packages"
+add dev pnpm "Efficient npm alt"
+add dev python3 "Python interpreter"
+add dev pip3 "Python packages"
+add dev go "Google Go lang"
+add dev java "JVM language"
+add dev swift "Apple Swift lang"
+
+add ai ollama "Local AI models"
+add ai claude-code "Claude Code CLI"
+add ai gemini-cli "Google Gemini CLI"
+add ai aider "AI pair programming"
+add ai openai "OpenAI CLI"
+
+add cloud docker "Containerization"
+add cloud docker-compose "Multi-container"
+add cloud kubectl "Kubernetes CLI"
+add cloud helm "K8s packages"
+add cloud terraform "Infra as code"
+add cloud aws "AWS CLI"
+add cloud gcloud "Google Cloud CLI"
+
+add edit code "VS Code"
+add edit cursor "AI Code Editor"
+add edit zed "Zed Editor"
+add edit nvim "Neovim"
+add edit vim "Vim"
+add edit nano "Simple editor"
+
+add search rg "Ripgrep search"
+add search fzf "Fuzzy finder"
+add search fd "Fast find alt"
+add search bat "Cat + syntax hl"
+add search jq "JSON processor"
+add search yq "YAML processor"
+add search tree "Dir tree view"
+add search glow "Markdown render"
+
+add net curl "HTTP client"
+add net wget "Web downloader"
+add net ssh "Secure shell"
+add net rsync "File sync"
+add net nmap "Network scanner"
+
+add db psql "PostgreSQL"
+add db mysql "MySQL"
+add db sqlite3 "SQLite"
+add db redis-cli "Redis"
+
+add sys htop "Process viewer"
+add sys btop "Resource monitor"
+add sys lsof "Open files"
+add sys tmux "Terminal mux"
+add sys gh "GitHub CLI"
+add sys lazygit "Git TUI"
+
+add media ffmpeg "Video/audio proc"
+add media yt-dlp "YouTube download"
+add media brew "Homebrew"
+add media pc "System info"
+add media cs "CLI tools check"
+
+add smart elgato "Key Light control"
+add smart bt "Bluetooth control"
+add smart audio "Audio routing"
+add smart screen "Display mgmt"
+add smart wifi "WiFi management"
+add smart scene "Scene presets"
+
+add tools dl "Download presets"
+add tools paper "Paper management"
+add tools note "Quick notes"
+add tools dns "DNS toolkit"
+add tools dictate "Speech-to-text"
+add tools whisper "Whisper STT"
+add tools translate "mBART translate"
+add tools generate-image "SD3 image gen"
+add tools llama "Llama 3.2 chat"
+
+# Read section files into arrays
+read_section() {
+    local file="$TMP/$1"
+    if [ -f "$file" ]; then
+        cat "$file"
+    fi
+}
+
+print_block() {
+    local name1="$1" file1="$2" name2="$3" file2="$4" name3="$5" file3="$6"
+
+    # Read lines
+    local -a c1=() c2=() c3=()
+    while IFS= read -r line; do c1+=("$line"); done < <(read_section "$file1")
+    while IFS= read -r line; do c2+=("$line"); done < <(read_section "$file2")
+    while IFS= read -r line; do c3+=("$line"); done < <(read_section "$file3")
+
+    # Header
+    echo -e "  $(pad "$(echo -e "${C}┌─ ${WH}${name1}${N}")" $COL_W)$(pad "$(echo -e "${C}┌─ ${WH}${name2}${N}")" $COL_W)$(pad "$(echo -e "${C}┌─ ${WH}${name3}${N}")" $COL_W)"
+
+    # Max rows
+    local max=${#c1[@]}
+    [ ${#c2[@]} -gt $max ] && max=${#c2[@]}
+    [ ${#c3[@]} -gt $max ] && max=${#c3[@]}
+
+    for ((r=0; r<max; r++)); do
+        echo -e "  $(pad "${c1[$r]:-}" $COL_W)$(pad "${c2[$r]:-}" $COL_W)$(pad "${c3[$r]:-}" $COL_W)"
+    done
+    echo ""
+}
+
+# Output
+echo ""
+echo -e "  ${WH}CLI TOOLS${N}  ${GR}·  ${WH}${TOOL_COUNT}${N} ${GR}installiert${N}"
+echo -e "  ${GR}$(printf '%.0s─' {1..154})${N}"
+echo ""
+
+print_block "DEVELOPMENT" dev "AI & LLM" ai "CONTAINER & CLOUD" cloud
+print_block "EDITORS" edit "SEARCH & TEXT" search "NETWORK" net
+print_block "DATABASE" db "SYSTEM & GIT" sys "MEDIA & CUSTOM" media
+print_block "SMART HOME" smart "CUSTOM TOOLS" tools "  " empty
+
+# Cleanup
+rm -rf "$TMP"

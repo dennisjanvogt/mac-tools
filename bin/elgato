@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+
+# Elgato Key Light CLI
+# Usage: elgato [command] [args]
+
+SERVICE="_elg._tcp"
+CACHE="$HOME/.cache/elgato-light"
+HOST=""
+PORT=""
+BASE=""
+
+discover() {
+    # Try cache first
+    if [ -f "$CACHE" ]; then
+        HOST=$(sed -n '1p' "$CACHE")
+        PORT=$(sed -n '2p' "$CACHE")
+        if curl -s --connect-timeout 1 "http://${HOST}:${PORT}/elgato/lights" > /dev/null 2>&1; then
+            BASE="http://${HOST}:${PORT}"
+            return
+        fi
+    fi
+
+    # Full mDNS discovery
+    local raw
+    raw=$(dns-sd -B "$SERVICE" . 2>&1 & PID=$!; sleep 3; kill $PID 2>/dev/null; wait $PID 2>/dev/null)
+    local name
+    name=$(echo "$raw" | grep "Add" | head -1 | sed 's/.*_elg._tcp\.\s*//')
+    [ -z "$name" ] && echo "Kein Elgato Light gefunden." && exit 1
+
+    local lookup
+    lookup=$(dns-sd -L "$name" "$SERVICE" . 2>&1 & PID=$!; sleep 3; kill $PID 2>/dev/null; wait $PID 2>/dev/null)
+    HOST=$(echo "$lookup" | grep "can be reached" | sed 's/.*at //' | sed 's/ .*//' | sed 's/:/ /' | awk '{print $1}')
+    PORT=$(echo "$lookup" | grep "can be reached" | sed 's/.*at //' | sed 's/ .*//' | sed 's/.*://')
+
+    [ -z "$HOST" ] && echo "Elgato Light nicht erreichbar." && exit 1
+
+    BASE="http://${HOST}:${PORT}"
+    mkdir -p "$(dirname "$CACHE")"
+    printf '%s\n%s\n' "$HOST" "$PORT" > "$CACHE"
+}
+
+json() {
+    python3 -c "import sys,json; d=json.load(sys.stdin); $1"
+}
+
+api_lights() {
+    local method="${1:-GET}" data="$2"
+    if [ -n "$data" ]; then
+        curl -s -X "$method" -H "Content-Type: application/json" -d "$data" "${BASE}/elgato/lights"
+    else
+        curl -s "${BASE}/elgato/lights"
+    fi
+}
+
+api_settings() {
+    local method="${1:-GET}" data="$2"
+    if [ -n "$data" ]; then
+        curl -s -X "$method" -H "Content-Type: application/json" -d "$data" "${BASE}/elgato/lights/settings"
+    else
+        curl -s "${BASE}/elgato/lights/settings"
+    fi
+}
+
+api_info() {
+    local method="${1:-GET}" data="$2"
+    if [ -n "$data" ]; then
+        curl -s -X "$method" -H "Content-Type: application/json" -d "$data" "${BASE}/elgato/accessory-info"
+    else
+        curl -s "${BASE}/elgato/accessory-info"
+    fi
+}
+
+get_val() {
+    api_lights GET | json "print(d['lights'][0]['$1'])"
+}
+
+get_setting() {
+    api_settings GET | json "print(d['$1'])"
+}
+
+usage() {
+    cat <<'EOF'
+Elgato Key Light CLI
+
+Usage: elgato <command> [args]
+
+Steuerung:
+  on                    Licht einschalten
+  off                   Licht ausschalten
+  toggle                Ein/Aus umschalten
+  brightness <0-100>    Helligkeit setzen (absolut)
+  brightness +N / -N    Helligkeit relativ ändern
+  temp <143-344>        Farbtemperatur setzen
+  set <br> <temp>       Helligkeit + Temperatur zusammen setzen
+
+Settings:
+  settings              Alle Settings anzeigen
+  fade-on <ms>          Einschalt-Fade setzen (z.B. 100)
+  fade-off <ms>         Ausschalt-Fade setzen (z.B. 300)
+  fade-color <ms>       Farbwechsel-Fade setzen (z.B. 100)
+  default-brightness <0-100>  Helligkeit beim Einschalten
+  default-temp <143-344>      Temperatur beim Einschalten
+
+Favoriten:
+  fav                   Favoriten anzeigen
+  fav 1                 Favorit 1 aktivieren
+  fav 2                 Favorit 2 aktivieren
+  fav set <1|2> <br> <temp>  Favorit speichern
+
+Info:
+  info                  Geräte-Info anzeigen
+  name <neuer-name>     Display-Name ändern
+  status                Aktuellen Status anzeigen
+  help                  Diese Hilfe anzeigen
+
+Kurzformen: b=brightness, t=temp, s=status, i=info, f=fav
+EOF
+}
+
+# Main
+discover
+
+case "${1:-status}" in
+    on)
+        api_lights PUT '{"numberOfLights":1,"lights":[{"on":1}]}' > /dev/null
+        echo "Licht an"
+        ;;
+    off)
+        api_lights PUT '{"numberOfLights":1,"lights":[{"on":0}]}' > /dev/null
+        echo "Licht aus"
+        ;;
+    toggle)
+        current=$(get_val on)
+        if [ "$current" = "1" ]; then
+            api_lights PUT '{"numberOfLights":1,"lights":[{"on":0}]}' > /dev/null
+            echo "Licht aus"
+        else
+            api_lights PUT '{"numberOfLights":1,"lights":[{"on":1}]}' > /dev/null
+            echo "Licht an"
+        fi
+        ;;
+    brightness|b)
+        if [ -z "$2" ]; then
+            echo "Helligkeit: $(get_val brightness)%"
+        elif [[ "$2" =~ ^[+] ]]; then
+            current=$(get_val brightness)
+            new=$((current + ${2#+}))
+            [ $new -gt 100 ] && new=100
+            api_lights PUT "{\"numberOfLights\":1,\"lights\":[{\"brightness\":$new}]}" > /dev/null
+            echo "Helligkeit: ${current}% → ${new}%"
+        elif [[ "$2" =~ ^[-] ]]; then
+            current=$(get_val brightness)
+            new=$((current - ${2#-}))
+            [ $new -lt 0 ] && new=0
+            api_lights PUT "{\"numberOfLights\":1,\"lights\":[{\"brightness\":$new}]}" > /dev/null
+            echo "Helligkeit: ${current}% → ${new}%"
+        else
+            api_lights PUT "{\"numberOfLights\":1,\"lights\":[{\"brightness\":$2}]}" > /dev/null
+            echo "Helligkeit: $2%"
+        fi
+        ;;
+    temp|t)
+        if [ -z "$2" ]; then
+            echo "Temperatur: $(get_val temperature)"
+        else
+            api_lights PUT "{\"numberOfLights\":1,\"lights\":[{\"temperature\":$2}]}" > /dev/null
+            echo "Temperatur: $2"
+        fi
+        ;;
+    set)
+        [ -z "$2" ] || [ -z "$3" ] && echo "Usage: elgato set <brightness> <temperature>" && exit 1
+        api_lights PUT "{\"numberOfLights\":1,\"lights\":[{\"brightness\":$2,\"temperature\":$3}]}" > /dev/null
+        echo "Helligkeit: $2% | Temperatur: $3"
+        ;;
+    settings)
+        data=$(api_settings GET)
+        echo "$data" | json "
+s=d
+print(f'''Settings:
+  Einschalt-Helligkeit:  {s['powerOnBrightness']}%
+  Einschalt-Temperatur:  {s['powerOnTemperature']}
+  Fade Ein:              {s['switchOnDurationMs']}ms
+  Fade Aus:              {s['switchOffDurationMs']}ms
+  Fade Farbwechsel:      {s['colorChangeDurationMs']}ms
+  Power-On Verhalten:    {s['powerOnBehavior']}''')"
+        ;;
+    fade-on)
+        [ -z "$2" ] && echo "Usage: elgato fade-on <ms>" && exit 1
+        api_settings PUT "{\"switchOnDurationMs\":$2}" > /dev/null
+        echo "Einschalt-Fade: ${2}ms"
+        ;;
+    fade-off)
+        [ -z "$2" ] && echo "Usage: elgato fade-off <ms>" && exit 1
+        api_settings PUT "{\"switchOffDurationMs\":$2}" > /dev/null
+        echo "Ausschalt-Fade: ${2}ms"
+        ;;
+    fade-color)
+        [ -z "$2" ] && echo "Usage: elgato fade-color <ms>" && exit 1
+        api_settings PUT "{\"colorChangeDurationMs\":$2}" > /dev/null
+        echo "Farbwechsel-Fade: ${2}ms"
+        ;;
+    default-brightness|db)
+        if [ -z "$2" ]; then
+            echo "Einschalt-Helligkeit: $(get_setting powerOnBrightness)%"
+        else
+            api_settings PUT "{\"powerOnBrightness\":$2}" > /dev/null
+            echo "Einschalt-Helligkeit: $2%"
+        fi
+        ;;
+    default-temp|dt)
+        if [ -z "$2" ]; then
+            echo "Einschalt-Temperatur: $(get_setting powerOnTemperature)"
+        else
+            api_settings PUT "{\"powerOnTemperature\":$2}" > /dev/null
+            echo "Einschalt-Temperatur: $2"
+        fi
+        ;;
+    fav|f)
+        if [ -z "$2" ]; then
+            data=$(api_settings GET)
+            echo "$data" | json "
+favs=d['remoteControl']['favourites']
+for i,f in enumerate(favs,1):
+    print(f'  Favorit {i}: Helligkeit {f[\"brightness\"]}% | Temperatur {f[\"temperature\"]}')"
+        elif [ "$2" = "set" ]; then
+            [ -z "$3" ] || [ -z "$4" ] || [ -z "$5" ] && echo "Usage: elgato fav set <1|2> <brightness> <temp>" && exit 1
+            data=$(api_settings GET)
+            favs=$(echo "$data" | json "
+import json as j
+favs=d['remoteControl']['favourites']
+favs[$3-1]={'brightness':$4,'temperature':$5}
+print(j.dumps({'remoteControl':{'favourites':favs}}))")
+            api_settings PUT "$favs" > /dev/null
+            echo "Favorit $3: Helligkeit $4% | Temperatur $5"
+        elif [ "$2" = "1" ] || [ "$2" = "2" ]; then
+            data=$(api_settings GET)
+            vals=$(echo "$data" | json "
+f=d['remoteControl']['favourites'][$2-1]
+print(f'{f[\"brightness\"]} {f[\"temperature\"]}')")
+            br=$(echo "$vals" | awk '{print $1}')
+            tp=$(echo "$vals" | awk '{print $2}')
+            api_lights PUT "{\"numberOfLights\":1,\"lights\":[{\"on\":1,\"brightness\":$br,\"temperature\":$tp}]}" > /dev/null
+            echo "Favorit $2: Helligkeit ${br}% | Temperatur ${tp}"
+        else
+            echo "Usage: elgato fav [1|2|set <1|2> <br> <temp>]"
+            exit 1
+        fi
+        ;;
+    info|i)
+        api_info GET | json "
+print(f'''Elgato Key Light:
+  Name:       {d['displayName']}
+  Produkt:    {d['productName']}
+  Serial:     {d['serialNumber']}
+  Firmware:   {d['firmwareVersion']} (Build {d['firmwareBuildNumber']})
+  Hardware:   Rev {d['hardwareRevision']}
+  MAC:        {d['macAddress']}
+  WLAN:       {d['wifi-info']['ssid']} ({d['wifi-info']['frequencyMHz']}MHz, RSSI {d['wifi-info']['rssi']})''')"
+        ;;
+    name)
+        [ -z "$2" ] && echo "Usage: elgato name <neuer-name>" && exit 1
+        shift
+        new_name="$*"
+        api_info PUT "{\"displayName\":\"$new_name\"}" > /dev/null
+        echo "Name: $new_name"
+        ;;
+    status|s)
+        state=$(api_lights GET)
+        on=$(echo "$state" | json "print(d['lights'][0]['on'])")
+        br=$(echo "$state" | json "print(d['lights'][0]['brightness'])")
+        tp=$(echo "$state" | json "print(d['lights'][0]['temperature'])")
+        if [ "$on" = "1" ]; then
+            echo "Elgato Key Light: AN | Helligkeit: ${br}% | Temperatur: ${tp}"
+        else
+            echo "Elgato Key Light: AUS | Helligkeit: ${br}% | Temperatur: ${tp}"
+        fi
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

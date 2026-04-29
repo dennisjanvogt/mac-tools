@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+
+# Paper Management CLI
+# Usage: paper [command] [args]
+# Downloads go to ~/Documents/Paper/
+
+PAPER_DIR="$HOME/Documents/Paper"
+mkdir -p "$PAPER_DIR"
+
+usage() {
+    cat <<'EOF'
+Paper Management CLI
+
+Usage: paper <command> [args]
+
+Suche:
+  search <query>        Semantic Scholar Suche (Top 10)
+  s2 <paper-id>         Semantic Scholar Details zu Paper
+
+arXiv:
+  fetch <arxiv-id>      PDF + BibTeX herunterladen
+  abstract <arxiv-id>   Abstract anzeigen
+  bib <arxiv-id>        BibTeX-Eintrag generieren
+
+DOI:
+  doi <doi>             Paper per DOI herunterladen
+
+Lokal:
+  list                  Heruntergeladene Paper auflisten
+  recent [N]            Letzte N Paper (Standard: 10)
+  open <datei>          PDF öffnen (Teilmatch)
+  cite <arxiv-id>       BibTeX in Clipboard kopieren
+
+Info:
+  help                  Diese Hilfe
+
+Kurzformen: s=search, f=fetch, a=abstract, l=list, o=open, c=cite, r=recent
+
+Beispiele:
+  paper fetch 2504.12523
+  paper search "prompt engineering LLM"
+  paper cite 2504.12523
+EOF
+}
+
+case "${1:-list}" in
+    search|s)
+        [ -z "$2" ] && echo "Usage: paper search <query>" && exit 1
+        shift
+        query=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$*'))")
+        curl -s "https://api.semanticscholar.org/graph/v1/paper/search?query=$query&limit=10&fields=title,year,citationCount,authors,externalIds" | python3 -c "
+import sys,json
+data=json.load(sys.stdin)
+papers=data.get('data',[])
+if not papers:
+    print('Keine Ergebnisse.')
+    sys.exit()
+for i,p in enumerate(papers,1):
+    authors=', '.join(a['name'] for a in (p.get('authors') or [])[:3])
+    if len(p.get('authors') or [])>3: authors+=' et al.'
+    year=p.get('year','?')
+    cites=p.get('citationCount',0)
+    arxiv=''
+    ext=p.get('externalIds') or {}
+    if ext.get('ArXiv'): arxiv=f' [arXiv:{ext[\"ArXiv\"]}]'
+    print(f'  {i:2d}. ({year}) {p[\"title\"]}')
+    print(f'      {authors} | {cites} Zitierungen{arxiv}')
+"
+        ;;
+    s2)
+        [ -z "$2" ] && echo "Usage: paper s2 <paper-id oder arxiv-id>" && exit 1
+        pid="$2"
+        [[ "$pid" =~ ^[0-9]{4}\. ]] && pid="ARXIV:$pid"
+        curl -s "https://api.semanticscholar.org/graph/v1/paper/$pid?fields=title,year,abstract,citationCount,authors,url,externalIds,venue" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+if 'error' in d:
+    print(f'Fehler: {d[\"error\"]}'); sys.exit(1)
+authors=', '.join(a['name'] for a in (d.get('authors') or [])[:5])
+if len(d.get('authors') or [])>5: authors+=' et al.'
+ext=d.get('externalIds') or {}
+arxiv=ext.get('ArXiv','')
+print(f'''  Titel:      {d.get('title','?')}
+  Autoren:    {authors}
+  Jahr:       {d.get('year','?')}
+  Venue:      {d.get('venue','?')}
+  Zitierungen: {d.get('citationCount',0)}
+  arXiv:      {arxiv if arxiv else '—'}
+  URL:        {d.get('url','?')}''')
+ab=d.get('abstract','')
+if ab:
+    print(f'\n  Abstract:\n  {ab[:500]}')
+"
+        ;;
+    fetch|f)
+        [ -z "$2" ] && echo "Usage: paper fetch <arxiv-id>" && exit 1
+        arxiv_id="$2"
+        # Clean ID
+        arxiv_id=$(echo "$arxiv_id" | sed 's|https://arxiv.org/abs/||' | sed 's|https://arxiv.org/pdf/||' | sed 's|\.pdf$||')
+        echo "Lade arXiv:${arxiv_id}..."
+
+        # Fetch metadata
+        meta=$(curl -s "https://export.arxiv.org/api/query?id_list=$arxiv_id")
+        title=$(echo "$meta" | python3 -c "
+import sys,re
+xml=sys.stdin.read()
+m=re.search(r'<title[^>]*>(.*?)</title>',xml,re.DOTALL)
+titles=[t for t in re.findall(r'<title[^>]*>(.*?)</title>',xml,re.DOTALL)]
+t=titles[-1] if len(titles)>1 else titles[0] if titles else 'unknown'
+print(re.sub(r'\s+',' ',t).strip())
+" 2>/dev/null)
+
+        # Sanitize filename
+        safe_name=$(echo "$title" | python3 -c "
+import sys,re
+t=sys.stdin.read().strip()
+t=re.sub(r'[^\w\s-]','',t)
+t=re.sub(r'\s+','_',t)
+print(t[:80])
+" 2>/dev/null)
+
+        pdf_file="${PAPER_DIR}/${arxiv_id}_${safe_name}.pdf"
+
+        # Download PDF
+        curl -sL "https://arxiv.org/pdf/${arxiv_id}.pdf" -o "$pdf_file"
+        if [ -f "$pdf_file" ] && [ -s "$pdf_file" ]; then
+            echo "PDF: $pdf_file"
+        else
+            echo "PDF Download fehlgeschlagen"
+            rm -f "$pdf_file"
+        fi
+
+        # Generate BibTeX
+        bib_file="${PAPER_DIR}/${arxiv_id}.bib"
+        echo "$meta" | python3 -c "
+import sys,re
+xml=sys.stdin.read()
+titles=re.findall(r'<title[^>]*>(.*?)</title>',xml,re.DOTALL)
+title=re.sub(r'\s+',' ',titles[-1]).strip() if len(titles)>1 else 'Unknown'
+authors_raw=re.findall(r'<name>(.*?)</name>',xml)
+authors=' and '.join(authors_raw)
+year_m=re.search(r'<published>(\d{4})',xml)
+year=year_m.group(1) if year_m else '????'
+first_author=authors_raw[0].split()[-1].lower() if authors_raw else 'unknown'
+key=f'{first_author}{year}_{\"$arxiv_id\".replace(\".\",\"\")}'
+print(f'''@article{{{key},
+  title={{{title}}},
+  author={{{authors}}},
+  journal={{arXiv preprint arXiv:$arxiv_id}},
+  year={{{year}}}
+}}''')
+" > "$bib_file" 2>/dev/null
+        echo "BibTeX: $bib_file"
+        echo "Titel: $title"
+        ;;
+    abstract|a)
+        [ -z "$2" ] && echo "Usage: paper abstract <arxiv-id>" && exit 1
+        arxiv_id=$(echo "$2" | sed 's|https://arxiv.org/abs/||' | sed 's|\.pdf$||')
+        curl -s "https://export.arxiv.org/api/query?id_list=$arxiv_id" | python3 -c "
+import sys,re
+xml=sys.stdin.read()
+m=re.search(r'<summary[^>]*>(.*?)</summary>',xml,re.DOTALL)
+if m:
+    print(re.sub(r'\s+',' ',m.group(1)).strip())
+else:
+    print('Abstract nicht gefunden.')
+"
+        ;;
+    bib)
+        [ -z "$2" ] && echo "Usage: paper bib <arxiv-id>" && exit 1
+        arxiv_id=$(echo "$2" | sed 's|https://arxiv.org/abs/||' | sed 's|\.pdf$||')
+        meta=$(curl -s "https://export.arxiv.org/api/query?id_list=$arxiv_id")
+        echo "$meta" | python3 -c "
+import sys,re
+xml=sys.stdin.read()
+titles=re.findall(r'<title[^>]*>(.*?)</title>',xml,re.DOTALL)
+title=re.sub(r'\s+',' ',titles[-1]).strip() if len(titles)>1 else 'Unknown'
+authors_raw=re.findall(r'<name>(.*?)</name>',xml)
+authors=' and '.join(authors_raw)
+year_m=re.search(r'<published>(\d{4})',xml)
+year=year_m.group(1) if year_m else '????'
+first_author=authors_raw[0].split()[-1].lower() if authors_raw else 'unknown'
+key=f'{first_author}{year}_{\"$arxiv_id\".replace(\".\",\"\")}'
+print(f'''@article{{{key},
+  title={{{title}}},
+  author={{{authors}}},
+  journal={{arXiv preprint arXiv:$arxiv_id}},
+  year={{{year}}}
+}}''')
+"
+        ;;
+    cite|c)
+        [ -z "$2" ] && echo "Usage: paper cite <arxiv-id>" && exit 1
+        arxiv_id=$(echo "$2" | sed 's|https://arxiv.org/abs/||' | sed 's|\.pdf$||')
+        meta=$(curl -s "https://export.arxiv.org/api/query?id_list=$arxiv_id")
+        bib=$(echo "$meta" | python3 -c "
+import sys,re
+xml=sys.stdin.read()
+titles=re.findall(r'<title[^>]*>(.*?)</title>',xml,re.DOTALL)
+title=re.sub(r'\s+',' ',titles[-1]).strip() if len(titles)>1 else 'Unknown'
+authors_raw=re.findall(r'<name>(.*?)</name>',xml)
+authors=' and '.join(authors_raw)
+year_m=re.search(r'<published>(\d{4})',xml)
+year=year_m.group(1) if year_m else '????'
+first_author=authors_raw[0].split()[-1].lower() if authors_raw else 'unknown'
+key=f'{first_author}{year}_{\"$arxiv_id\".replace(\".\",\"\")}'
+print(f'''@article{{{key},
+  title={{{title}}},
+  author={{{authors}}},
+  journal={{arXiv preprint arXiv:$arxiv_id}},
+  year={{{year}}}
+}}''')
+")
+        echo "$bib" | pbcopy
+        echo "BibTeX in Clipboard kopiert:"
+        echo "$bib"
+        ;;
+    doi)
+        [ -z "$2" ] && echo "Usage: paper doi <doi>" && exit 1
+        doi="$2"
+        echo "DOI: $doi"
+        # Lookup on Semantic Scholar
+        data=$(curl -s "https://api.semanticscholar.org/graph/v1/paper/DOI:$doi?fields=title,authors,year,externalIds,openAccessPdf")
+        echo "$data" | python3 -c "
+import sys, json, subprocess, os, re
+
+d = json.load(sys.stdin)
+if 'error' in d:
+    print(f'Fehler: {d[\"error\"]}')
+    sys.exit(1)
+
+title = d.get('title', 'Unknown')
+authors = d.get('authors', [])
+year = d.get('year', '????')
+ext = d.get('externalIds', {}) or {}
+arxiv = ext.get('ArXiv', '')
+oa = d.get('openAccessPdf', {}) or {}
+pdf_url = oa.get('url', '')
+
+print(f'Titel: {title}')
+auth_str = ', '.join(a['name'] for a in authors[:3])
+if len(authors) > 3: auth_str += ' et al.'
+print(f'Autoren: {auth_str}')
+print(f'Jahr: {year}')
+
+paper_dir = os.path.expanduser('~/Documents/Paper')
+safe = re.sub(r'[^\w\s-]', '', title)
+safe = re.sub(r'\s+', '_', safe)[:80]
+
+# If arXiv, delegate to fetch
+if arxiv:
+    print(f'arXiv: {arxiv}')
+    print('Nutze: paper fetch ' + arxiv)
+    sys.exit(0)
+
+# Try open access PDF
+if pdf_url:
+    fname = f'{paper_dir}/{safe}.pdf'
+    print(f'Lade PDF: {pdf_url}')
+    subprocess.run(['curl', '-sL', '-o', fname, pdf_url], capture_output=True)
+    print(f'PDF: {fname}')
+else:
+    print('Kein Open-Access-PDF verfügbar.')
+
+# Generate BibTeX
+first_author = authors[0]['name'].split()[-1].lower() if authors else 'unknown'
+doi_clean = '$doi'.replace('/', '_')
+key = f'{first_author}{year}_{doi_clean}'
+bib = f'''@article{{{key},
+  title={{{title}}},
+  author={{{' and '.join(a['name'] for a in authors)}}},
+  year={{{year}}},
+  doi={{{\"$doi\"}}}
+}}'''
+print(f'\nBibTeX:\n{bib}')
+"
+        ;;
+    recent|r)
+        n="${2:-10}"
+        echo "Letzte $n Paper:"
+        find "$PAPER_DIR" -name "*.pdf" -exec stat -f '%m %N' {} \; 2>/dev/null | sort -rn | head -"$n" | while read -r _ f; do
+            name=$(basename "$f" .pdf)
+            mod=$(stat -f '%Sm' -t '%Y-%m-%d' "$f" 2>/dev/null)
+            echo "  $mod  $name"
+        done
+        ;;
+    list|l)
+        count=$(find "$PAPER_DIR" -name "*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+        echo "Paper ($count PDFs in $PAPER_DIR):"
+        find "$PAPER_DIR" -name "*.pdf" -exec basename {} \; 2>/dev/null | sort | sed 's/^/  /'
+        ;;
+    open|o)
+        [ -z "$2" ] && echo "Usage: paper open <dateiname-teil>" && exit 1
+        shift
+        query=$(echo "$*" | tr '[:upper:]' '[:lower:]')
+        match=$(find "$PAPER_DIR" -name "*.pdf" | while IFS= read -r f; do
+            base=$(basename "$f" | tr '[:upper:]' '[:lower:]')
+            if [[ "$base" == *"$query"* ]]; then
+                echo "$f"
+                break
+            fi
+        done)
+        if [ -z "$match" ]; then
+            echo "Kein Paper gefunden: $*"
+            exit 1
+        fi
+        open "$match"
+        echo "Geöffnet: $(basename "$match")"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

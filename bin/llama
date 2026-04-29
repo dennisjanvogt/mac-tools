@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""
+Chat with Llama 3.2-3B using transformers.
+Usage: llama "Explain Python"
+       llama "What is 2+2?" --max-tokens 100
+       echo "Hello" | llama
+"""
+
+import sys
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(description="Chat with Llama 3.2-3B")
+    parser.add_argument("prompt", nargs="?", help="Your message to Llama")
+    parser.add_argument("--max-tokens", "-m", type=int, default=512, help="Maximum tokens to generate (default: 512)")
+    parser.add_argument("--temperature", "-t", type=float, default=0.7, help="Temperature (default: 0.7)")
+    parser.add_argument("--system", "-s", default="You are a helpful assistant.", help="System prompt")
+    args = parser.parse_args()
+
+    # Read from stdin if no prompt provided
+    if args.prompt:
+        user_prompt = args.prompt
+    elif not sys.stdin.isatty():
+        user_prompt = sys.stdin.read().strip()
+    else:
+        print("Error: No prompt provided. Usage: llama 'your question'", file=sys.stderr)
+        sys.exit(1)
+
+    print("Loading Llama 3.2-3B...", file=sys.stderr)
+
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    # Use MPS on Apple Silicon, CUDA on NVIDIA, otherwise CPU
+    if torch.backends.mps.is_available():
+        device = "mps"
+        dtype = torch.float16
+    elif torch.cuda.is_available():
+        device = "cuda"
+        dtype = torch.float16
+    else:
+        device = "cpu"
+        dtype = torch.float32
+        print("Warning: Running on CPU, this will be slow.", file=sys.stderr)
+
+    model_id = "meta-llama/Llama-3.2-3B-Instruct"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=dtype,
+        device_map="auto",
+    )
+
+    # Format as chat
+    messages = [
+        {"role": "system", "content": args.system},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    # Apply chat template
+    input_text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+
+    inputs = tokenizer(input_text, return_tensors="pt").to(device)
+
+    print("Generating response...", file=sys.stderr)
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=args.max_tokens,
+            temperature=args.temperature,
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    # Decode only the new tokens
+    response = tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+    print(response)
+
+if __name__ == "__main__":
+    main()

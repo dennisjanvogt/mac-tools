@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+
+# Display Management CLI
+# Usage: screen [command] [args]
+
+usage() {
+    cat <<'EOF'
+Display Management CLI
+
+Usage: screen <command> [args]
+
+Erscheinungsbild:
+  dark                  Dark Mode aktivieren
+  light                 Light Mode aktivieren
+  mode                  Aktuellen Modus anzeigen
+  toggle                Dark/Light umschalten
+
+Display:
+  list                  Alle Displays anzeigen
+  mirror on             Spiegeln einschalten
+  mirror off            Spiegeln ausschalten
+  brightness <0-100>    Display-Helligkeit (benötigt: brew install brightness)
+  resolution            Aktuelle Auflösung anzeigen
+
+Sonstiges:
+  lock                  Bildschirm sperren
+  saver                 Bildschirmschoner starten
+  sleep                 Display schlafen legen
+  cafe on|off           Caffeinate (kein Ruhezustand)
+  status                Alles anzeigen
+  help                  Diese Hilfe
+
+Kurzformen: d=dark, l=light, t=toggle, s=status, b=brightness
+EOF
+}
+
+case "${1:-status}" in
+    dark|d)
+        osascript -e 'tell app "System Events" to tell appearance preferences to set dark mode to true'
+        echo "Dark Mode"
+        ;;
+    light|l)
+        osascript -e 'tell app "System Events" to tell appearance preferences to set dark mode to false'
+        echo "Light Mode"
+        ;;
+    mode)
+        mode=$(osascript -e 'tell app "System Events" to tell appearance preferences to get dark mode')
+        if [ "$mode" = "true" ]; then
+            echo "Modus: Dark"
+        else
+            echo "Modus: Light"
+        fi
+        ;;
+    toggle|t)
+        osascript -e 'tell app "System Events" to tell appearance preferences to set dark mode to not dark mode'
+        mode=$(osascript -e 'tell app "System Events" to tell appearance preferences to get dark mode')
+        if [ "$mode" = "true" ]; then
+            echo "Dark Mode"
+        else
+            echo "Light Mode"
+        fi
+        ;;
+    warm|cool|warmth|nightshift)
+        echo "Night Shift: Nicht programmatisch steuerbar."
+        echo "Nutze: Systemeinstellungen → Displays → Night Shift"
+        echo "Oder:  Siri → 'Night Shift einschalten'"
+        ;;
+    list)
+        system_profiler SPDisplaysDataType 2>/dev/null | python3 -c "
+import sys
+lines = sys.stdin.read().split('\n')
+for l in lines:
+    s = l.strip()
+    if any(k in s for k in ['Display Type','Resolution','Main Display','Mirror','Retina','Display Name']):
+        print(f'  {s}')
+"
+        ;;
+    mirror)
+        if [ "$2" = "on" ]; then
+            osascript -e 'tell application "System Events" to tell process "SystemUIServer" to click menu bar item "Screen Mirroring" of menu bar 1' 2>/dev/null
+            echo "Spiegeln: Öffne Menü..."
+        elif [ "$2" = "off" ]; then
+            echo "Spiegeln: Öffne Displayeinstellungen..."
+            open "x-apple.systempreferences:com.apple.Displays-Settings.extension" 2>/dev/null
+        else
+            echo "Usage: screen mirror on|off"
+            exit 1
+        fi
+        ;;
+    brightness|b)
+        if [ -z "$2" ]; then
+            # Try brightness CLI first, then osascript
+            if command -v brightness >/dev/null 2>&1; then
+                br=$(brightness -l 2>/dev/null | grep -v "failed" | grep "brightness" | head -1 | awk '{print $NF}')
+            fi
+            if [ -n "$br" ] && [ "$br" != "0" ]; then
+                pct=$(python3 -c "print(int(float('$br')*100))")
+                echo "Display-Helligkeit: ${pct}%"
+            else
+                vol=$(osascript -e 'tell application "System Events" to tell process "Control Center" to value of value indicator 1 of group 1 of window "Control Center"' 2>/dev/null)
+                if [ -n "$vol" ]; then
+                    echo "Display-Helligkeit: ~${vol}"
+                else
+                    echo "Display-Helligkeit: Nicht auslesbar (externer Monitor)"
+                fi
+            fi
+        else
+            val=$(python3 -c "print($2/100)")
+            if command -v brightness >/dev/null 2>&1; then
+                brightness "$val" 2>/dev/null
+            fi
+            echo "Display-Helligkeit: $2%"
+        fi
+        ;;
+    resolution)
+        system_profiler SPDisplaysDataType 2>/dev/null | grep -i "resolution" | sed 's/^[[:space:]]*/  /'
+        ;;
+    lock)
+        osascript -e 'tell application "System Events" to keystroke "q" using {command down, control down}'
+        echo "Bildschirm gesperrt"
+        ;;
+    saver)
+        open -a ScreenSaverEngine
+        echo "Bildschirmschoner"
+        ;;
+    sleep)
+        pmset displaysleepnow
+        ;;
+    cafe)
+        if [ "$2" = "on" ]; then
+            if pgrep -x caffeinate > /dev/null; then
+                echo "Caffeinate läuft bereits"
+            else
+                caffeinate -d &
+                echo "Caffeinate an (kein Display-Sleep)"
+            fi
+        elif [ "$2" = "off" ]; then
+            pkill -x caffeinate 2>/dev/null
+            echo "Caffeinate aus"
+        else
+            if pgrep -x caffeinate > /dev/null; then
+                echo "Caffeinate: AN"
+            else
+                echo "Caffeinate: AUS"
+            fi
+        fi
+        ;;
+    status|s)
+        mode=$(osascript -e 'tell app "System Events" to tell appearance preferences to get dark mode')
+        if [ "$mode" = "true" ]; then m="Dark"; else m="Light"; fi
+        cafe="AUS"
+        pgrep -x caffeinate > /dev/null && cafe="AN"
+        echo "Modus:       $m"
+        system_profiler SPDisplaysDataType 2>/dev/null | grep -i "resolution" | head -1 | sed 's/^[[:space:]]*/Auflösung:   /'
+        echo "Caffeinate:  $cafe"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

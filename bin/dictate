@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+
+# Dictate CLI — Spracheingabe mit Whisper
+# Usage: dictate [command]
+
+CONFIG_FILE="$HOME/.config/dictate/model"
+RECORDING_FILE="/tmp/dictate_recording.wav"
+PID_FILE="/tmp/dictate_recording.pid"
+WHISPER_BIN="/opt/homebrew/opt/whisper-cpp/bin/whisper-cli"
+
+mkdir -p "$(dirname "$CONFIG_FILE")"
+
+current_model() {
+    if [ -f "$CONFIG_FILE" ]; then
+        cat "$CONFIG_FILE"
+    else
+        echo "base"
+    fi
+}
+
+model_path() {
+    echo "$HOME/.whisper/ggml-$(current_model).bin"
+}
+
+usage() {
+    cat <<'EOF'
+Dictate CLI — Spracheingabe mit Whisper
+
+Usage: dictate <command>
+
+Aufnahme:
+  start                 Aufnahme starten
+  stop                  Stoppen, transkribieren, einfügen
+
+Konfiguration:
+  config [base|large-v3]  Modell anzeigen/wechseln
+  status                Aufnahme-Status + Modell-Info
+
+Info:
+  help                  Diese Hilfe
+
+Kurzformen: s=start, x=stop, c=config
+EOF
+}
+
+case "${1:-status}" in
+    start|s)
+        # Alte Aufnahme löschen
+        rm -f "$RECORDING_FILE"
+
+        # Aufnahme starten mit ffmpeg (Audio-Gerät 0 = MacBook Pro-Mikrofon)
+        ffmpeg -f avfoundation -i ":0" -ar 16000 -ac 1 -y "$RECORDING_FILE" </dev/null >/dev/null 2>&1 &
+        echo $! > "$PID_FILE"
+
+        osascript -e 'display notification "🎤 Aufnahme läuft..." with title "Dictate"'
+        echo "Aufnahme gestartet"
+        ;;
+    stop|x)
+        MODEL=$(model_path)
+
+        # Aufnahme stoppen
+        if [ -f "$PID_FILE" ]; then
+            kill -INT $(cat "$PID_FILE") 2>/dev/null
+            sleep 0.5
+            rm -f "$PID_FILE"
+        fi
+
+        sleep 0.3
+
+        # Prüfe Aufnahme
+        if [ ! -f "$RECORDING_FILE" ]; then
+            osascript -e 'display notification "Keine Aufnahme gefunden" with title "Dictate" sound name "Basso"'
+            echo "Keine Aufnahme gefunden"
+            exit 1
+        fi
+
+        # Prüfe Länge
+        DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$RECORDING_FILE" 2>/dev/null)
+        if [ -z "$DURATION" ] || (( $(echo "$DURATION < 0.5" | bc -l) )); then
+            osascript -e 'display notification "Aufnahme zu kurz" with title "Dictate" sound name "Basso"'
+            rm -f "$RECORDING_FILE"
+            echo "Aufnahme zu kurz"
+            exit 1
+        fi
+
+        osascript -e 'display notification "Transkribiere..." with title "Dictate"'
+
+        # Transkribieren
+        RESULT=$("$WHISPER_BIN" -m "$MODEL" -f "$RECORDING_FILE" -l de --no-timestamps 2>/dev/null | grep -v "^whisper\|^ggml\|^main\|^system" | grep -v "^\s*$" | sed 's/^ *//' | tr '\n' ' ' | sed 's/  */ /g' | xargs)
+
+        rm -f "$RECORDING_FILE"
+
+        if [ -z "$RESULT" ]; then
+            osascript -e 'display notification "Keine Sprache erkannt" with title "Dictate" sound name "Basso"'
+            echo "Keine Sprache erkannt"
+            exit 1
+        fi
+
+        # Clipboard + Paste
+        echo -n "$RESULT" | pbcopy
+        osascript -e 'tell application "System Events" to keystroke "v" using command down'
+        osascript -e "display notification \"$RESULT\" with title \"✓ Dictate\" sound name \"Glass\""
+        echo "$RESULT"
+        ;;
+    config|c)
+        if [ -z "$2" ]; then
+            echo "Aktuelles Modell: $(current_model)"
+            echo ""
+            echo "Verfügbare Modelle:"
+            ls ~/.whisper/*.bin 2>/dev/null | while read f; do
+                name=$(basename "$f" .bin | sed 's/ggml-//')
+                size=$(ls -lh "$f" | awk '{print $5}')
+                if [ "$name" = "$(current_model)" ]; then
+                    echo "  ► $name ($size) [aktiv]"
+                else
+                    echo "    $name ($size)"
+                fi
+            done
+            echo ""
+            echo "Wechseln mit: dictate config base|large-v3"
+        elif [ "$2" = "base" ]; then
+            echo "base" > "$CONFIG_FILE"
+            echo "Modell: base (schnell)"
+        elif [ "$2" = "large" ] || [ "$2" = "large-v3" ]; then
+            echo "large-v3" > "$CONFIG_FILE"
+            echo "Modell: large-v3 (beste Qualität)"
+        else
+            echo "Unbekanntes Modell: $2"
+            echo "Verfügbar: base, large-v3"
+            exit 1
+        fi
+        ;;
+    status)
+        model=$(current_model)
+        if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+            echo "Aufnahme: LÄUFT"
+        else
+            echo "Aufnahme: INAKTIV"
+            rm -f "$PID_FILE"
+        fi
+        echo "Modell:   $model"
+        model_file=$(model_path)
+        if [ -f "$model_file" ]; then
+            size=$(ls -lh "$model_file" | awk '{print $5}')
+            echo "Größe:   $size"
+        else
+            echo "Größe:   (Modell nicht gefunden)"
+        fi
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

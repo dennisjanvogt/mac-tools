@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+
+# Audio Routing CLI
+# Usage: audio [command] [args]
+# Requires: SwitchAudioSource (brew install switchaudio-osx)
+
+usage() {
+    cat <<'EOF'
+Audio Routing CLI
+
+Usage: audio <command> [args]
+
+Ausgabe:
+  output                Aktuelles Ausgabegerät
+  output <name>         Ausgabegerät wechseln (Teilmatch)
+  outputs               Alle Ausgabegeräte auflisten
+
+Eingabe:
+  input                 Aktuelles Eingabegerät
+  input <name>          Eingabegerät wechseln (Teilmatch)
+  inputs                Alle Eingabegeräte auflisten
+
+Lautstärke:
+  vol                   Aktuelle Lautstärke (0-100)
+  vol <0-100>           Lautstärke setzen
+  vol +N / -N           Lautstärke relativ
+  mute                  Stummschalten
+  unmute                Stummschaltung aufheben
+
+Presets:
+  preset save <name>    Aktuelle Konfiguration speichern
+  preset <name>         Preset laden
+  presets               Alle Presets anzeigen
+
+Info:
+  status                Alle Audio-Infos
+  help                  Diese Hilfe
+
+Kurzformen: o=output, i=input, v=vol, s=status, p=preset
+EOF
+}
+
+require_sas() {
+    command -v SwitchAudioSource >/dev/null 2>&1 || { echo "SwitchAudioSource nicht installiert. brew install switchaudio-osx"; exit 1; }
+}
+
+match_device() {
+    local type="$1" query="$2"
+    query_lower=$(echo "$query" | tr '[:upper:]' '[:lower:]')
+    SwitchAudioSource -a -t "$type" 2>/dev/null | while IFS= read -r name; do
+        name_lower=$(echo "$name" | tr '[:upper:]' '[:lower:]')
+        if [[ "$name_lower" == *"$query_lower"* ]]; then
+            echo "$name"
+            return
+        fi
+    done
+}
+
+require_sas
+
+case "${1:-status}" in
+    output|o)
+        if [ -z "$2" ]; then
+            echo "Ausgabe: $(SwitchAudioSource -c -t output)"
+        else
+            shift
+            match=$(match_device output "$*")
+            if [ -z "$match" ]; then
+                echo "Ausgabegerät nicht gefunden: $*"
+                echo "Verfügbar:"
+                SwitchAudioSource -a -t output | sed 's/^/  /'
+                exit 1
+            fi
+            SwitchAudioSource -s "$match" -t output > /dev/null
+            echo "Ausgabe: $match"
+        fi
+        ;;
+    outputs)
+        current=$(SwitchAudioSource -c -t output)
+        echo "Ausgabegeräte:"
+        SwitchAudioSource -a -t output | while IFS= read -r name; do
+            if [ "$name" = "$current" ]; then
+                echo "  ● $name"
+            else
+                echo "  ○ $name"
+            fi
+        done
+        ;;
+    input|i)
+        if [ -z "$2" ]; then
+            echo "Eingabe: $(SwitchAudioSource -c -t input)"
+        else
+            shift
+            match=$(match_device input "$*")
+            if [ -z "$match" ]; then
+                echo "Eingabegerät nicht gefunden: $*"
+                echo "Verfügbar:"
+                SwitchAudioSource -a -t input | sed 's/^/  /'
+                exit 1
+            fi
+            SwitchAudioSource -s "$match" -t input > /dev/null
+            echo "Eingabe: $match"
+        fi
+        ;;
+    inputs)
+        current=$(SwitchAudioSource -c -t input)
+        echo "Eingabegeräte:"
+        SwitchAudioSource -a -t input | while IFS= read -r name; do
+            if [ "$name" = "$current" ]; then
+                echo "  ● $name"
+            else
+                echo "  ○ $name"
+            fi
+        done
+        ;;
+    vol|v)
+        if [ -z "$2" ]; then
+            vol=$(osascript -e 'output volume of (get volume settings)')
+            muted=$(osascript -e 'output muted of (get volume settings)')
+            m=""
+            [ "$muted" = "true" ] && m=" (muted)"
+            echo "Lautstärke: ${vol}%${m}"
+        elif [[ "$2" =~ ^[+] ]]; then
+            current=$(osascript -e 'output volume of (get volume settings)')
+            new=$((current + ${2#+}))
+            [ $new -gt 100 ] && new=100
+            osascript -e "set volume output volume $new"
+            echo "Lautstärke: ${current}% → ${new}%"
+        elif [[ "$2" =~ ^[-] ]]; then
+            current=$(osascript -e 'output volume of (get volume settings)')
+            new=$((current - ${2#-}))
+            [ $new -lt 0 ] && new=0
+            osascript -e "set volume output volume $new"
+            echo "Lautstärke: ${current}% → ${new}%"
+        else
+            osascript -e "set volume output volume $2"
+            echo "Lautstärke: $2%"
+        fi
+        ;;
+    mute)
+        osascript -e 'set volume output muted true'
+        echo "Stumm"
+        ;;
+    unmute)
+        osascript -e 'set volume output muted false'
+        echo "Ton an"
+        ;;
+    preset|p)
+        PRESET_DIR="$HOME/.config/audio/presets"
+        mkdir -p "$PRESET_DIR"
+        if [ "$2" = "save" ]; then
+            [ -z "$3" ] && echo "Usage: audio preset save <name>" && exit 1
+            out=$(SwitchAudioSource -c -t output)
+            inp=$(SwitchAudioSource -c -t input)
+            vol=$(osascript -e 'output volume of (get volume settings)')
+            printf "output=%s\ninput=%s\nvolume=%s\n" "$out" "$inp" "$vol" > "$PRESET_DIR/$3"
+            echo "Preset gespeichert: $3 (Ausgabe: $out, Eingabe: $inp, Vol: $vol%)"
+        elif [ -z "$2" ]; then
+            echo "Audio Presets:"
+            found=0
+            for f in "$PRESET_DIR"/*; do
+                [ -f "$f" ] || continue
+                found=1
+                name=$(basename "$f")
+                out=$(grep '^output=' "$f" | cut -d= -f2-)
+                vol=$(grep '^volume=' "$f" | cut -d= -f2-)
+                echo "  $name — $out (${vol}%)"
+            done
+            if [ "$found" = "0" ]; then echo "  (keine Presets)"; fi
+        else
+            [ ! -f "$PRESET_DIR/$2" ] && echo "Preset nicht gefunden: $2" && exit 1
+            p_out=$(grep '^output=' "$PRESET_DIR/$2" | cut -d= -f2-)
+            p_inp=$(grep '^input=' "$PRESET_DIR/$2" | cut -d= -f2-)
+            p_vol=$(grep '^volume=' "$PRESET_DIR/$2" | cut -d= -f2-)
+            [ -n "$p_out" ] && SwitchAudioSource -s "$p_out" -t output > /dev/null 2>&1
+            [ -n "$p_inp" ] && SwitchAudioSource -s "$p_inp" -t input > /dev/null 2>&1
+            [ -n "$p_vol" ] && osascript -e "set volume output volume $p_vol"
+            echo "Preset geladen: $2 (Ausgabe: $p_out, Vol: ${p_vol}%)"
+        fi
+        ;;
+    presets)
+        "$0" preset
+        ;;
+    status|s)
+        out=$(SwitchAudioSource -c -t output)
+        inp=$(SwitchAudioSource -c -t input)
+        vol=$(osascript -e 'output volume of (get volume settings)')
+        muted=$(osascript -e 'output muted of (get volume settings)')
+        m=""
+        [ "$muted" = "true" ] && m=" (muted)"
+        echo "Ausgabe:     $out"
+        echo "Eingabe:     $inp"
+        echo "Lautstärke:  ${vol}%${m}"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

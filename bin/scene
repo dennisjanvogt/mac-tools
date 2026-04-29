@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+
+# Scene CLI — Cross-Tool Presets
+# Usage: scene [command] [args]
+# Scenes stored in ~/.config/scenes/
+
+SCENE_DIR="$HOME/.config/scenes"
+
+init_defaults() {
+    mkdir -p "$SCENE_DIR"
+    [ "$(ls -A "$SCENE_DIR" 2>/dev/null)" ] && return
+
+    cat > "$SCENE_DIR/movie.sh" << 'SCENE'
+#!/bin/bash
+# Film-Modus: Licht aus, Dark Mode
+screen dark
+elgato off
+SCENE
+
+    cat > "$SCENE_DIR/work.sh" << 'SCENE'
+#!/bin/bash
+# Arbeit: Licht an, Helligkeit 60%, Light Mode
+screen light
+elgato on
+elgato set 60 230
+SCENE
+
+    cat > "$SCENE_DIR/sleep.sh" << 'SCENE'
+#!/bin/bash
+# Schlaf: Alles aus, Bildschirm sperren
+elgato off
+screen lock
+SCENE
+
+    chmod +x "$SCENE_DIR"/*.sh
+}
+
+usage() {
+    cat <<'EOF'
+Scene CLI — Cross-Tool Presets
+
+Usage: scene <command> [args]
+
+Szenen:
+  <name>                Scene ausführen
+  list                  Alle Szenen anzeigen
+  show <name>           Scene-Inhalt anzeigen
+  add <name>            Neue Scene erstellen
+  edit <name>           Scene bearbeiten
+  delete <name>         Scene löschen
+
+Info:
+  help                  Diese Hilfe
+
+Kurzformen: l=list, a=add, e=edit
+
+Szenen liegen in: ~/.config/scenes/
+EOF
+}
+
+find_scene() {
+    local name="$1"
+    if [ -f "$SCENE_DIR/${name}.sh" ]; then
+        echo "$SCENE_DIR/${name}.sh"
+    elif [ -f "$SCENE_DIR/${name}" ]; then
+        echo "$SCENE_DIR/${name}"
+    else
+        echo ""
+    fi
+}
+
+init_defaults
+
+case "${1:-list}" in
+    list|l)
+        echo "Szenen ($SCENE_DIR):"
+        found=0
+        for f in "$SCENE_DIR"/*.sh; do
+            [ -f "$f" ] || continue
+            found=1
+            name=$(basename "$f" .sh)
+            # Extract description from line 2 (first comment after shebang)
+            desc=$(sed -n '2s/^# *//p' "$f")
+            printf "  %-12s %s\n" "$name" "${desc:-(keine Beschreibung)}"
+        done
+        if [ "$found" = "0" ]; then echo "  (keine Szenen)"; fi
+        ;;
+    show)
+        [ -z "$2" ] && echo "Usage: scene show <name>" && exit 1
+        file=$(find_scene "$2")
+        [ -z "$file" ] && echo "Scene nicht gefunden: $2" && exit 1
+        if command -v bat >/dev/null 2>&1; then
+            bat --style=plain --language=bash "$file"
+        else
+            cat "$file"
+        fi
+        ;;
+    add|a)
+        [ -z "$2" ] && echo "Usage: scene add <name>" && exit 1
+        file="$SCENE_DIR/${2}.sh"
+        if [ -f "$file" ]; then
+            echo "Scene existiert bereits: $2"
+            echo "Nutze: scene edit $2"
+            exit 1
+        fi
+        cat > "$file" << 'TEMPLATE'
+#!/bin/bash
+# Beschreibung hier
+# Verfügbare Tools: elgato, bt, audio, screen, wifi
+
+TEMPLATE
+        chmod +x "$file"
+        ${EDITOR:-vim} "$file"
+        echo "Scene erstellt: $2"
+        ;;
+    edit|e)
+        [ -z "$2" ] && echo "Usage: scene edit <name>" && exit 1
+        file=$(find_scene "$2")
+        [ -z "$file" ] && echo "Scene nicht gefunden: $2" && exit 1
+        ${EDITOR:-vim} "$file"
+        echo "Scene aktualisiert: $2"
+        ;;
+    delete)
+        [ -z "$2" ] && echo "Usage: scene delete <name>" && exit 1
+        file=$(find_scene "$2")
+        [ -z "$file" ] && echo "Scene nicht gefunden: $2" && exit 1
+        name=$(basename "$file" .sh)
+        read -p "Scene löschen: $name? (j/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[jJyY]$ ]]; then
+            rm "$file"
+            echo "Gelöscht: $name"
+        else
+            echo "Abgebrochen."
+        fi
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        # Try to execute as scene name
+        file=$(find_scene "$1")
+        if [ -n "$file" ]; then
+            name=$(basename "$file" .sh)
+            desc=$(sed -n '2s/^# *//p' "$file")
+            echo "Scene: $name${desc:+ — $desc}"
+            echo ""
+            # Execute each line, print what's happening
+            while IFS= read -r line; do
+                # Skip shebang, comments, empty lines
+                [[ "$line" =~ ^#!/ ]] && continue
+                [[ "$line" =~ ^#  ]] && continue
+                [[ -z "$line" ]] && continue
+                echo "  → $line"
+                eval "$line"
+            done < "$file"
+            echo ""
+            echo "Scene abgeschlossen."
+        else
+            echo "Unbekannter Befehl/Scene: $1"
+            usage
+            exit 1
+        fi
+        ;;
+esac

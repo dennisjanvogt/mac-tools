@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+
+# Download CLI (yt-dlp Wrapper)
+# Usage: dl [command] [url]
+# Requires: yt-dlp, ffmpeg
+
+DL_DIR="$HOME/Downloads"
+
+usage() {
+    cat <<'EOF'
+Download CLI (yt-dlp Wrapper)
+
+Usage: dl <command> <url>
+
+Formate:
+  video <url>           Video in bester Qualität
+  audio <url>           Nur Audio (MP3)
+  mp3 <url>             Audio als MP3
+  best <url>            Beste Video+Audio Qualität
+  subs <url>            Video mit Untertiteln
+  thumb <url>           Nur Thumbnail herunterladen
+
+Optionen:
+  formats <url>         Verfügbare Formate anzeigen
+  info <url>            Video-Info anzeigen
+
+Playlist:
+  playlist <url>        Ganze Playlist herunterladen
+  playlist-audio <url>  Playlist als Audio
+
+Extras:
+  clip <url> <start> <end>  Ausschnitt (z.B. dl clip URL 1:30 2:00)
+  4k <url>              Video in 4K herunterladen
+  search <query>        YouTube durchsuchen (Top 10)
+
+Info:
+  help                  Diese Hilfe
+
+Kurzformen: v=video, a=audio, b=best, s=subs, f=formats, p=playlist
+EOF
+}
+
+require_ytdlp() {
+    command -v yt-dlp >/dev/null 2>&1 || { echo "yt-dlp nicht installiert. brew install yt-dlp"; exit 1; }
+}
+
+require_ytdlp
+
+# Fix YouTube JS challenge warnings
+YT_OPTS="--remote-components ejs:github"
+
+case "${1:-help}" in
+    video|v)
+        [ -z "$2" ] && echo "Usage: dl video <url>" && exit 1
+        echo "Lade Video..."
+        yt-dlp $YT_OPTS -f "bestvideo[height<=1080]+bestaudio/best" --merge-output-format mp4 -o "$DL_DIR/%(title)s.%(ext)s" "$2"
+        ;;
+    best|b)
+        [ -z "$2" ] && echo "Usage: dl best <url>" && exit 1
+        echo "Lade beste Qualität..."
+        yt-dlp $YT_OPTS -f "bestvideo+bestaudio/best" --merge-output-format mp4 -o "$DL_DIR/%(title)s.%(ext)s" "$2"
+        ;;
+    audio|a|mp3)
+        [ -z "$2" ] && echo "Usage: dl audio <url>" && exit 1
+        echo "Lade Audio..."
+        yt-dlp $YT_OPTS -x --audio-format mp3 --audio-quality 0 -o "$DL_DIR/%(title)s.%(ext)s" "$2"
+        ;;
+    subs|s)
+        [ -z "$2" ] && echo "Usage: dl subs <url>" && exit 1
+        echo "Lade Video mit Untertiteln..."
+        yt-dlp $YT_OPTS -f "bestvideo[height<=1080]+bestaudio/best" --merge-output-format mp4 --write-subs --sub-langs "en,de" --embed-subs -o "$DL_DIR/%(title)s.%(ext)s" "$2"
+        ;;
+    thumb)
+        [ -z "$2" ] && echo "Usage: dl thumb <url>" && exit 1
+        echo "Lade Thumbnail..."
+        yt-dlp $YT_OPTS --write-thumbnail --skip-download -o "$DL_DIR/%(title)s.%(ext)s" "$2"
+        ;;
+    formats|f)
+        [ -z "$2" ] && echo "Usage: dl formats <url>" && exit 1
+        yt-dlp $YT_OPTS -F "$2"
+        ;;
+    info)
+        [ -z "$2" ] && echo "Usage: dl info <url>" && exit 1
+        yt-dlp $YT_OPTS --print "%(title)s" --print "%(uploader)s" --print "%(duration_string)s" --print "%(view_count)s views" --print "%(upload_date>%Y-%m-%d)s" --no-download "$2" 2>/dev/null | python3 -c "
+import sys
+lines=sys.stdin.read().strip().split('\n')
+if len(lines)>=5:
+    print(f'''  Titel:    {lines[0]}
+  Kanal:    {lines[1]}
+  Dauer:    {lines[2]}
+  Views:    {lines[3]}
+  Datum:    {lines[4]}''')
+"
+        ;;
+    playlist|p)
+        [ -z "$2" ] && echo "Usage: dl playlist <url>" && exit 1
+        echo "Lade Playlist..."
+        yt-dlp $YT_OPTS -f "bestvideo[height<=1080]+bestaudio/best" --merge-output-format mp4 -o "$DL_DIR/%(playlist_title)s/%(playlist_index)03d_%(title)s.%(ext)s" --yes-playlist "$2"
+        ;;
+    playlist-audio)
+        [ -z "$2" ] && echo "Usage: dl playlist-audio <url>" && exit 1
+        echo "Lade Playlist (Audio)..."
+        yt-dlp $YT_OPTS -x --audio-format mp3 --audio-quality 0 -o "$DL_DIR/%(playlist_title)s/%(playlist_index)03d_%(title)s.%(ext)s" --yes-playlist "$2"
+        ;;
+    clip)
+        [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ] && echo "Usage: dl clip <url> <start> <end>" && exit 1
+        echo "Lade Clip ($3 bis $4)..."
+        yt-dlp $YT_OPTS -f "bestvideo[height<=1080]+bestaudio/best" --merge-output-format mp4 --download-sections "*$3-$4" -o "$DL_DIR/%(title)s_clip.%(ext)s" "$2"
+        ;;
+    4k)
+        [ -z "$2" ] && echo "Usage: dl 4k <url>" && exit 1
+        echo "Lade 4K..."
+        yt-dlp $YT_OPTS -f "bestvideo[height<=2160]+bestaudio/best" --merge-output-format mp4 -o "$DL_DIR/%(title)s.%(ext)s" "$2"
+        ;;
+    search)
+        [ -z "$2" ] && echo "Usage: dl search <query>" && exit 1
+        shift
+        query="$*"
+        echo "YouTube Suche: \"$query\""
+        echo ""
+        yt-dlp $YT_OPTS "ytsearch10:$query" --flat-playlist \
+            --print "%(title)s|||%(url)s|||%(duration_string)s|||%(view_count)s" 2>/dev/null | python3 -c "
+import sys
+for i, line in enumerate(sys.stdin, 1):
+    parts = line.strip().split('|||')
+    if len(parts) >= 4:
+        title, url, dur, views = parts[0], parts[1], parts[2], parts[3]
+        try:
+            v = int(views)
+            if v >= 1_000_000: vs = f'{v/1_000_000:.1f}M'
+            elif v >= 1_000: vs = f'{v/1_000:.0f}K'
+            else: vs = str(v)
+        except: vs = views
+        print(f'  {i:2d}. {title}')
+        print(f'      {dur} | {vs} Views | {url}')
+    elif len(parts) >= 1:
+        print(f'  {i:2d}. {parts[0]}')
+"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        # If first arg looks like a URL, default to video
+        if [[ "$1" =~ ^https?:// ]]; then
+            echo "Lade Video..."
+            yt-dlp $YT_OPTS -f "bestvideo[height<=1080]+bestaudio/best" --merge-output-format mp4 -o "$DL_DIR/%(title)s.%(ext)s" "$1"
+        else
+            echo "Unbekannter Befehl: $1"
+            usage
+            exit 1
+        fi
+        ;;
+esac

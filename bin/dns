@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+
+# DNS CLI
+# Usage: dns [command] [args]
+
+usage() {
+    cat <<'EOF'
+DNS CLI
+
+Usage: dns <command> [args]
+
+Befehle:
+  lookup <domain>       DNS-Abfrage (A, AAAA, MX, NS, TXT)
+  resolve <domain>      Nur IP-Adressen
+  flush                 DNS-Cache leeren
+  current               Aktuellen DNS-Server anzeigen
+  switch <provider>     DNS-Server wechseln
+                        Provider: cloudflare, google, quad9, auto
+  test                  DNS-Geschwindigkeit testen
+  help                  Diese Hilfe
+
+Kurzformen: l=lookup, r=resolve, f=flush, c=current, s=switch, t=test
+EOF
+}
+
+get_interface() {
+    # Get primary network interface
+    route -n get default 2>/dev/null | grep 'interface:' | awk '{print $2}'
+}
+
+get_service() {
+    local iface=$(get_interface)
+    networksetup -listallhardwareports 2>/dev/null | python3 -c "
+import sys
+lines=sys.stdin.read().strip().split('\n')
+name=None
+for l in lines:
+    if l.startswith('Hardware Port:'):
+        name=l.split(':',1)[1].strip()
+    if 'Device: $iface' in l and name:
+        print(name)
+        break
+" 2>/dev/null
+}
+
+case "${1:-current}" in
+    lookup|l)
+        [ -z "$2" ] && echo "Usage: dns lookup <domain>" && exit 1
+        domain="$2"
+        echo "DNS Lookup: $domain"
+        echo ""
+        echo "  A Records:"
+        dig +short A "$domain" 2>/dev/null | sed 's/^/    /'
+        echo "  AAAA Records:"
+        dig +short AAAA "$domain" 2>/dev/null | sed 's/^/    /'
+        echo "  MX Records:"
+        dig +short MX "$domain" 2>/dev/null | sed 's/^/    /'
+        echo "  NS Records:"
+        dig +short NS "$domain" 2>/dev/null | sed 's/^/    /'
+        echo "  TXT Records:"
+        dig +short TXT "$domain" 2>/dev/null | sed 's/^/    /'
+        ;;
+    resolve|r)
+        [ -z "$2" ] && echo "Usage: dns resolve <domain>" && exit 1
+        dig +short A "$2" 2>/dev/null
+        dig +short AAAA "$2" 2>/dev/null
+        ;;
+    flush|f)
+        sudo dscacheutil -flushcache 2>/dev/null
+        sudo killall -HUP mDNSResponder 2>/dev/null
+        echo "DNS-Cache geleert"
+        ;;
+    current|c)
+        service=$(get_service)
+        if [ -n "$service" ]; then
+            dns=$(networksetup -getdnsservers "$service" 2>/dev/null)
+            echo "Interface: $service"
+            if echo "$dns" | grep -q "any DNS"; then
+                echo "DNS: Auto (DHCP)"
+            else
+                echo "DNS:"
+                echo "$dns" | sed 's/^/  /'
+            fi
+        else
+            echo "DNS Server:"
+            scutil --dns 2>/dev/null | grep 'nameserver\[' | head -5 | awk '{print "  " $3}'
+        fi
+        ;;
+    switch|s)
+        [ -z "$2" ] && echo "Usage: dns switch <cloudflare|google|quad9|auto>" && exit 1
+        service=$(get_service)
+        [ -z "$service" ] && echo "Netzwerk-Service nicht erkannt" && exit 1
+        case "$2" in
+            cloudflare|cf)
+                sudo networksetup -setdnsservers "$service" 1.1.1.1 1.0.0.1 2606:4700:4700::1111 2606:4700:4700::1001
+                echo "DNS: Cloudflare (1.1.1.1)"
+                ;;
+            google|g)
+                sudo networksetup -setdnsservers "$service" 8.8.8.8 8.8.4.4 2001:4860:4860::8888 2001:4860:4860::8844
+                echo "DNS: Google (8.8.8.8)"
+                ;;
+            quad9|q9)
+                sudo networksetup -setdnsservers "$service" 9.9.9.9 149.112.112.112 2620:fe::fe 2620:fe::9
+                echo "DNS: Quad9 (9.9.9.9)"
+                ;;
+            auto|dhcp)
+                sudo networksetup -setdnsservers "$service" empty
+                echo "DNS: Auto (DHCP)"
+                ;;
+            *)
+                echo "Unbekannter Provider: $2"
+                echo "Verfügbar: cloudflare, google, quad9, auto"
+                exit 1
+                ;;
+        esac
+        # Flush cache after switch
+        sudo dscacheutil -flushcache 2>/dev/null
+        sudo killall -HUP mDNSResponder 2>/dev/null
+        ;;
+    test|t)
+        echo "DNS Speed Test:"
+        echo ""
+        for server in "1.1.1.1:Cloudflare" "8.8.8.8:Google" "9.9.9.9:Quad9"; do
+            ip="${server%%:*}"
+            name="${server##*:}"
+            time=$(dig @"$ip" google.com +stats +noall 2>/dev/null | grep "Query time" | awk '{print $4}')
+            printf "  %-12s %s ms\n" "$name" "${time:-timeout}"
+        done
+        echo ""
+        # Current DNS
+        current_time=$(dig google.com +stats +noall 2>/dev/null | grep "Query time" | awk '{print $4}')
+        printf "  %-12s %s ms\n" "Aktuell" "${current_time:-timeout}"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

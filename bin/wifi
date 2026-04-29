@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+
+# WiFi Management CLI
+# Usage: wifi [command] [args]
+
+IFACE="en0"
+
+usage() {
+    cat <<'EOF'
+WiFi Management CLI
+
+Usage: wifi <command> [args]
+
+Verbindung:
+  status                SSID, Signal, IP, Channel
+  list                  Verfügbare Netzwerke
+  connect <ssid> [pw]   Mit Netzwerk verbinden
+  disconnect            Verbindung trennen
+  on                    WiFi einschalten
+  off                   WiFi ausschalten
+
+Info:
+  password              Passwort des aktuellen Netzwerks
+  ip                    Interne + externe IP
+  speed                 Download-Speedtest
+  help                  Diese Hilfe
+
+Kurzformen: s=status, l=list, c=connect, p=password
+EOF
+}
+
+get_ssid() {
+    networksetup -getairportnetwork "$IFACE" 2>/dev/null | sed 's/^Current Wi-Fi Network: //' | grep -v "not associated"
+}
+
+case "${1:-status}" in
+    status|s)
+        ssid=$(get_ssid)
+        if [ -z "$ssid" ]; then
+            power=$(networksetup -getairportpower "$IFACE" 2>/dev/null | grep -c "On")
+            if [ "$power" = "0" ]; then
+                echo "WiFi: AUS"
+            else
+                echo "WiFi: AN (nicht verbunden)"
+            fi
+            exit 0
+        fi
+        ip=$(ipconfig getifaddr "$IFACE" 2>/dev/null || echo "—")
+        # Parse system_profiler for signal details
+        system_profiler SPAirPortDataType 2>/dev/null | python3 -c "
+import sys, re
+text = sys.stdin.read()
+# Find the current network section
+m = re.search(r'Current Network Information:\s*\n\s+(\S[^\n]*?):\s*\n(.*?)(?:\n\s{8}\S|\Z)', text, re.DOTALL)
+if m:
+    body = m.group(2)
+    info = {}
+    for line in body.split('\n'):
+        line = line.strip()
+        if ':' in line:
+            k, v = line.split(':', 1)
+            info[k.strip()] = v.strip()
+    phy = info.get('PHY Mode', '—')
+    ch = info.get('Channel', '—')
+    sec = info.get('Security', '—')
+    sig = info.get('Signal / Noise', '—')
+    tx = info.get('Transmit Rate', '—')
+    print(f'  Signal:    {sig}')
+    print(f'  Channel:   {ch}')
+    print(f'  PHY:       {phy}')
+    print(f'  TX Rate:   {tx}')
+    print(f'  Sicherheit: {sec}')
+"
+        echo "WiFi: $ssid"
+        echo "  IP:        $ip"
+        ;;
+    list|l)
+        echo "Verfügbare Netzwerke:"
+        # Use networksetup scan (available on modern macOS)
+        system_profiler SPAirPortDataType 2>/dev/null | python3 -c "
+import sys, re
+text = sys.stdin.read()
+# Find 'Other Local Wi-Fi Networks' section
+m = re.search(r'Other Local Wi-Fi Networks:\s*\n(.*?)(?:\n\s{4}\S|\Z)', text, re.DOTALL)
+if m:
+    body = m.group(1)
+    nets = re.findall(r'^\s{10}(\S[^\n:]*?):\s*\n(.*?)(?=\n\s{10}\S|\Z)', body, re.MULTILINE | re.DOTALL)
+    seen = set()
+    for name, info in nets:
+        name = name.strip()
+        if name in seen: continue
+        seen.add(name)
+        sig_m = re.search(r'Signal / Noise:\s*([^\n]+)', info)
+        sec_m = re.search(r'Security:\s*([^\n]+)', info)
+        sig = sig_m.group(1).strip() if sig_m else ''
+        sec = sec_m.group(1).strip() if sec_m else ''
+        print(f'  {name:30s} {sig:20s} {sec}')
+else:
+    print('  Keine Netzwerke gefunden.')
+    print('  (WiFi-Scan kann einige Sekunden dauern)')
+"
+        ;;
+    connect|c)
+        [ -z "$2" ] && echo "Usage: wifi connect <ssid> [passwort]" && exit 1
+        ssid="$2"
+        if [ -n "$3" ]; then
+            networksetup -setairportnetwork "$IFACE" "$ssid" "$3" 2>/dev/null
+        else
+            networksetup -setairportnetwork "$IFACE" "$ssid" 2>/dev/null
+        fi
+        sleep 1
+        current=$(get_ssid)
+        if [ "$current" = "$ssid" ]; then
+            echo "Verbunden: $ssid"
+        else
+            echo "Verbindung fehlgeschlagen: $ssid"
+            exit 1
+        fi
+        ;;
+    disconnect)
+        ssid=$(get_ssid)
+        networksetup -setairportpower "$IFACE" off 2>/dev/null
+        sleep 0.5
+        networksetup -setairportpower "$IFACE" on 2>/dev/null
+        echo "Getrennt${ssid:+: $ssid}"
+        ;;
+    on)
+        networksetup -setairportpower "$IFACE" on 2>/dev/null
+        echo "WiFi an"
+        ;;
+    off)
+        networksetup -setairportpower "$IFACE" off 2>/dev/null
+        echo "WiFi aus"
+        ;;
+    password|p)
+        ssid=$(get_ssid)
+        if [ -z "$ssid" ]; then
+            echo "Nicht mit WiFi verbunden"
+            exit 1
+        fi
+        pw=$(security find-generic-password -ga "$ssid" -w 2>/dev/null)
+        if [ -n "$pw" ]; then
+            echo "SSID:     $ssid"
+            echo "Passwort: $pw"
+            echo -n "$pw" | pbcopy
+            echo "(in Clipboard kopiert)"
+        else
+            echo "Passwort für '$ssid' nicht im Schlüsselbund gefunden"
+            echo "(Keychain-Zugriff wird möglicherweise benötigt)"
+        fi
+        ;;
+    ip)
+        internal=$(ipconfig getifaddr "$IFACE" 2>/dev/null || echo "—")
+        external=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "—")
+        echo "Intern:  $internal"
+        echo "Extern:  $external"
+        ;;
+    speed)
+        echo "Speedtest..."
+        # Download 10MB from Cloudflare
+        speed=$(curl -s -o /dev/null -w '%{speed_download}' --max-time 15 \
+            "https://speed.cloudflare.com/__down?measId=0&bytes=10000000" 2>/dev/null)
+        if [ -n "$speed" ] && [ "$speed" != "0.000" ]; then
+            mbps=$(python3 -c "print(f'{float(\"$speed\") * 8 / 1_000_000:.1f}')")
+            echo "Download: ~${mbps} Mbps"
+        else
+            echo "Speedtest fehlgeschlagen"
+        fi
+        # Upload test
+        speed_up=$(curl -s -o /dev/null -w '%{speed_upload}' --max-time 10 \
+            -X POST -d "$(head -c 1000000 /dev/urandom 2>/dev/null | base64)" \
+            "https://speed.cloudflare.com/__up" 2>/dev/null)
+        if [ -n "$speed_up" ] && [ "$speed_up" != "0.000" ]; then
+            mbps_up=$(python3 -c "print(f'{float(\"$speed_up\") * 8 / 1_000_000:.1f}')")
+            echo "Upload:   ~${mbps_up} Mbps"
+        fi
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

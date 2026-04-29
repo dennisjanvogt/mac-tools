@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""
+Image generation script using Stable Diffusion 3 Medium.
+Usage: generate-image "a cat on the moon"
+       generate-image "sunset over ocean" --output sunset.png --steps 30
+"""
+
+import sys
+import argparse
+import os
+from datetime import datetime
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate images using Stable Diffusion 3")
+    parser.add_argument("prompt", help="Text prompt for image generation")
+    parser.add_argument("--output", "-o", help="Output filename (default: auto-generated)")
+    parser.add_argument("--steps", "-n", type=int, default=28, help="Number of inference steps (default: 28)")
+    parser.add_argument("--guidance", "-g", type=float, default=7.0, help="Guidance scale (default: 7.0)")
+    parser.add_argument("--width", type=int, default=1024, help="Image width (default: 1024)")
+    parser.add_argument("--height", type=int, default=1024, help="Image height (default: 1024)")
+    parser.add_argument("--seed", "-s", type=int, help="Random seed for reproducibility")
+    args = parser.parse_args()
+
+    print("Loading Stable Diffusion 3 Medium...", file=sys.stderr)
+
+    import torch
+    from diffusers import StableDiffusion3Pipeline
+
+    # Use MPS on Apple Silicon, CUDA on NVIDIA, otherwise CPU
+    if torch.backends.mps.is_available():
+        device = "mps"
+        dtype = torch.float16
+    elif torch.cuda.is_available():
+        device = "cuda"
+        dtype = torch.float16
+    else:
+        device = "cpu"
+        dtype = torch.float32
+        print("Warning: Running on CPU, this will be slow.", file=sys.stderr)
+
+    pipe = StableDiffusion3Pipeline.from_pretrained(
+        "stabilityai/stable-diffusion-3-medium-diffusers",
+        torch_dtype=dtype,
+    )
+    pipe = pipe.to(device)
+
+    # Enable memory optimizations
+    if hasattr(pipe, 'enable_attention_slicing'):
+        pipe.enable_attention_slicing()
+
+    generator = None
+    if args.seed is not None:
+        generator = torch.Generator(device=device).manual_seed(args.seed)
+
+    print(f"Generating image for: '{args.prompt}'", file=sys.stderr)
+
+    image = pipe(
+        prompt=args.prompt,
+        num_inference_steps=args.steps,
+        guidance_scale=args.guidance,
+        width=args.width,
+        height=args.height,
+        generator=generator,
+    ).images[0]
+
+    # Generate output filename if not provided
+    if args.output:
+        output_path = args.output
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_prompt = "".join(c if c.isalnum() or c in " -_" else "" for c in args.prompt[:30])
+        safe_prompt = safe_prompt.strip().replace(" ", "_")
+        output_path = f"sd3_{safe_prompt}_{timestamp}.png"
+
+    image.save(output_path)
+    print(f"Image saved to: {output_path}")
+
+if __name__ == "__main__":
+    main()
