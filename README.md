@@ -1,6 +1,6 @@
 # mac-tools
 
-A collection of small CLI tools I use on macOS — short shell/Python scripts that wrap common workflows: Bluetooth, audio, Wi-Fi, displays, DNS, YouTube downloads, notes, speech-to-text, system info, scene presets, academic papers, image generation, local LLM chat, plus CLI shells for a personal SwiftUI app suite (`dash`, `kanban`, `tafel`, `zeit`, `canwa`, `literatur`, `termine`).
+A collection of small CLI tools I use on macOS — short shell/Python scripts that wrap common workflows: Bluetooth, audio, Wi-Fi, displays, DNS, YouTube downloads, notes, speech-to-text, system info, scene presets, academic papers, image generation, local LLM chat, plus CLI shells **and full SwiftUI source** for a personal Mac app suite (`dash`, `kanban`, `tafel`, `zeit`, `canwa`, `literatur`, `termine`).
 
 > The scripts print German UI text (Hilfe, Statusmeldungen). Commands and flags are English. If you don't read German you'll still figure it out from the help screens.
 
@@ -12,7 +12,9 @@ cd mac-tools
 ./install.sh
 ```
 
-`install.sh` symlinks every script in `bin/` into `~/.local/bin/`. Make sure that directory is on your `PATH`.
+`install.sh` symlinks:
+- every script in `bin/` into `~/.local/bin/` (make sure that directory is on your `PATH`)
+- every SwiftUI app source folder in `src/` into `~/.local/src/` (only relevant for the ConsultingOS apps — the `<tool> build` commands `swiftc` from there)
 
 To uninstall: `./install.sh --uninstall`.
 
@@ -63,19 +65,26 @@ Run `<tool> help` (or `--help`) on any of these for the full command list.
 
 ### ConsultingOS apps
 
-CLI wrappers for a personal SwiftUI app suite that talks to my private API at `1o618.com`. **They will not work for you out of the box** — they need both the SwiftUI source code (not in this repo, expected at `~/.local/src/<name>/`) and access to the backend. They're published as a reference for anyone wanting to wrap a custom SaaS in CLI shells: keychain-shared auth across apps, `swiftc` build pipeline from a single `main.swift`, simple REST clients in pure bash.
+CLI wrappers + full SwiftUI source for a personal Mac app suite that talks to my private API at `1o618.com`. The Swift sources live in `src/<name>/main.swift`; `install.sh` symlinks each `src/<name>/` into `~/.local/src/<name>/` so the build commands work.
+
+```bash
+kanban build       # swiftc src/kanban/main.swift  ->  ~/Applications/Kanban.app
+kanban open        # auto-builds if missing
+```
+
+**The apps will still not be useful to anyone but me** — every authenticated request goes to `https://1o618.com`, which is private. They're published as a reference for: keychain-shared auth across multiple Mac apps (`com.dennis.consultingos` — logging out of any one logs out of all), single-file SwiftUI apps compiled with plain `swiftc` (no Xcode project), and bash REST clients reading the same auth token.
 
 | Tool | What it does |
 | --- | --- |
 | `dash` | Dashboard cards (weather, stocks, crypto, wiki, news, image search, YouTube tiles, Kanban sync, system stats). Reads `SERPER_API_KEY` from `~/.config/keys/search.env` for search-related cards. |
 | `kanban` | Kanban board: list cards, todo/in-progress filter, add, move, done, archive, rm. |
-| `tafel` | Whiteboard (Excalidraw) frontend: list/new/rm diagrams, list projects. |
+| `tafel` | Whiteboard (Excalidraw via WKWebView): list/new/rm diagrams, list projects. |
 | `zeit` | Time tracking: start/stop timer, log, projects, clients, add manual entry, weekly/monthly summary. |
-| `canwa` | Image editor (SwiftUI shell hosting a Vite/React bundle in WKWebView). |
-| `literatur` | Literature/PDF reader. |
+| `canwa` | Image editor — SwiftUI shell hosting a Vite/React bundle (`src/canwa-web/`). Run `cd src/canwa-web && npm install && npx vite build` once before `canwa build`. |
+| `literatur` | Literature/PDF reader (PDFKit). |
 | `termine` | Calendar/appointments: list (today/week/month), next, add, rm. |
 
-Shared keychain: `com.dennis.consultingos`. Logging out of any one app logs out of all of them.
+Each Swift file is a single-file SwiftUI app (30k–278k lines of source) — no Xcode project, no SPM manifest. Build with `swiftc -parse-as-library -O -framework SwiftUI <main.swift>`; the CLI does that for you.
 
 ## Dependencies in one shot
 

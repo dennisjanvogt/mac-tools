@@ -4,3 +4,7 @@
 __pycache__/
 *.pyc
 .venv/
+
+# canwa-web build artefacts (regenerate locally with `npm install && npx vite build`)
+src/canwa-web/node_modules/
+src/canwa-web/dist/

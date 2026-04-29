@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#15151a"/>
+      <stop offset="1" stop-color="#08080c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.4" r="0.75">
+      <stop offset="0" stop-color="#8C6BBF" stop-opacity="0.22"/>
+      <stop offset="0.65" stop-color="#8C6BBF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accentCard" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a386d8"/>
+      <stop offset="1" stop-color="#7351A8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Dark rounded background -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#glow)"/>
+
+  <!-- Top accent line -->
+  <rect x="160" y="160" width="704" height="6" rx="3" fill="#8C6BBF" opacity="0.9"/>
+
+  <!-- Column 1 (Backlog) — three light cards -->
+  <g fill="#c8c4c0">
+    <rect x="160" y="232" width="200" height="120" rx="14" opacity="0.55"/>
+    <rect x="160" y="380" width="200" height="180" rx="14" opacity="0.45"/>
+    <rect x="160" y="588" width="200" height="140" rx="14" opacity="0.55"/>
+  </g>
+
+  <!-- Column 2 (In Progress) — accent card highlighted -->
+  <g>
+    <rect x="412" y="232" width="200" height="240" rx="14" fill="url(#accentCard)"/>
+    <!-- accent stripe on the side of the active card -->
+    <rect x="412" y="232" width="14" height="240" rx="6" fill="#ffffff" opacity="0.30"/>
+    <rect x="412" y="500" width="200" height="160" rx="14" fill="#c8c4c0" opacity="0.50"/>
+    <rect x="412" y="688" width="200" height="120" rx="14" fill="#c8c4c0" opacity="0.45"/>
+  </g>
+
+  <!-- Column 3 (Done) — checkmark cards -->
+  <g fill="#c8c4c0">
+    <rect x="664" y="232" width="200" height="160" rx="14" opacity="0.50"/>
+    <rect x="664" y="420" width="200" height="140" rx="14" opacity="0.55"/>
+    <rect x="664" y="588" width="200" height="180" rx="14" opacity="0.45"/>
+  </g>
+
+  <!-- Small dot indicators on the accent card -->
+  <circle cx="450" cy="276" r="11" fill="#ffffff" opacity="0.85"/>
+  <rect x="476" y="266" width="100" height="8" rx="4" fill="#ffffff" opacity="0.75"/>
+  <rect x="440" y="306" width="150" height="6" rx="3" fill="#ffffff" opacity="0.45"/>
+  <rect x="440" y="324" width="120" height="6" rx="3" fill="#ffffff" opacity="0.45"/>
+</svg>

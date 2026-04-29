@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#15151a"/>
+      <stop offset="1" stop-color="#08080c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.4" r="0.75">
+      <stop offset="0" stop-color="#8C6BBF" stop-opacity="0.22"/>
+      <stop offset="0.65" stop-color="#8C6BBF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bookSpine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a386d8"/>
+      <stop offset="1" stop-color="#7351A8"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#glow)"/>
+
+  <!-- Stack of books on a shelf -->
+  <!-- Book 1 (left) -->
+  <rect x="200" y="290" width="90" height="440" rx="6" fill="#c8c4c0" opacity="0.55"/>
+  <rect x="210" y="320" width="70" height="6" fill="#15151a" opacity="0.4"/>
+  <rect x="210" y="340" width="50" height="4" fill="#15151a" opacity="0.3"/>
+  <rect x="210" y="700" width="70" height="8" fill="#15151a" opacity="0.5"/>
+
+  <!-- Book 2 -->
+  <rect x="305" y="240" width="90" height="490" rx="6" fill="url(#bookSpine)"/>
+  <rect x="315" y="280" width="70" height="6" fill="#ffffff" opacity="0.7"/>
+  <rect x="315" y="300" width="55" height="4" fill="#ffffff" opacity="0.5"/>
+  <rect x="315" y="700" width="70" height="8" fill="#ffffff" opacity="0.6"/>
+
+  <!-- Book 3 -->
+  <rect x="410" y="270" width="80" height="460" rx="6" fill="#c8c4c0" opacity="0.6"/>
+  <rect x="420" y="305" width="60" height="6" fill="#15151a" opacity="0.4"/>
+  <rect x="420" y="700" width="60" height="8" fill="#15151a" opacity="0.5"/>
+
+  <!-- Book 4 (slightly tilted, leaning) -->
+  <g transform="rotate(-8 540 500)">
+    <rect x="505" y="260" width="80" height="475" rx="6" fill="#c8c4c0" opacity="0.50"/>
+    <rect x="515" y="295" width="60" height="6" fill="#15151a" opacity="0.4"/>
+    <rect x="515" y="705" width="60" height="8" fill="#15151a" opacity="0.5"/>
+  </g>
+
+  <!-- Single open paper / document on the right -->
+  <g transform="translate(615 280)">
+    <rect x="0" y="0" width="220" height="280" rx="4" fill="#c8c4c0" opacity="0.92"/>
+    <!-- Lines -->
+    <rect x="20" y="30" width="180" height="6" fill="#15151a" opacity="0.55"/>
+    <rect x="20" y="50" width="120" height="4" fill="#15151a" opacity="0.4"/>
+    <rect x="20" y="70" width="160" height="4" fill="#15151a" opacity="0.4"/>
+    <rect x="20" y="100" width="180" height="4" fill="#15151a" opacity="0.4"/>
+    <rect x="20" y="115" width="140" height="4" fill="#15151a" opacity="0.4"/>
+    <!-- Highlighted text -->
+    <rect x="20" y="145" width="160" height="14" fill="#FCD34D" opacity="0.65"/>
+    <rect x="20" y="148" width="160" height="4" fill="#15151a" opacity="0.55"/>
+    <rect x="20" y="180" width="180" height="4" fill="#15151a" opacity="0.4"/>
+    <rect x="20" y="195" width="120" height="4" fill="#15151a" opacity="0.4"/>
+    <!-- Annotation marker (right edge) -->
+    <circle cx="195" cy="155" r="8" fill="#8C6BBF"/>
+  </g>
+
+  <!-- Bookshelf bar -->
+  <rect x="180" y="745" width="675" height="14" rx="3" fill="#8C6BBF" opacity="0.7"/>
+</svg>

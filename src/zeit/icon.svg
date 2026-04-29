@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#15151a"/>
+      <stop offset="1" stop-color="#08080c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.4" r="0.75">
+      <stop offset="0" stop-color="#8C6BBF" stop-opacity="0.22"/>
+      <stop offset="0.65" stop-color="#8C6BBF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a386d8"/>
+      <stop offset="1" stop-color="#7351A8"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#glow)"/>
+
+  <!-- Clock outer ring -->
+  <circle cx="512" cy="512" r="320" fill="none" stroke="#c8c4c0" stroke-width="22" opacity="0.5"/>
+  <circle cx="512" cy="512" r="320" fill="none" stroke="#8C6BBF" stroke-width="22" opacity="0.55"
+          stroke-dasharray="800 1200" stroke-dashoffset="-200" stroke-linecap="round"/>
+
+  <!-- Hour ticks -->
+  <g stroke="#c8c4c0" stroke-width="6" stroke-linecap="round" opacity="0.55">
+    <line x1="512" y1="200" x2="512" y2="240"/>
+    <line x1="512" y1="784" x2="512" y2="824"/>
+    <line x1="200" y1="512" x2="240" y2="512"/>
+    <line x1="784" y1="512" x2="824" y2="512"/>
+  </g>
+  <g stroke="#c8c4c0" stroke-width="3" stroke-linecap="round" opacity="0.30">
+    <line x1="668" y1="241" x2="654" y2="266"/>
+    <line x1="783" y1="356" x2="758" y2="370"/>
+    <line x1="783" y1="668" x2="758" y2="654"/>
+    <line x1="668" y1="783" x2="654" y2="758"/>
+    <line x1="356" y1="783" x2="370" y2="758"/>
+    <line x1="241" y1="668" x2="266" y2="654"/>
+    <line x1="241" y1="356" x2="266" y2="370"/>
+    <line x1="356" y1="241" x2="370" y2="266"/>
+  </g>
+
+  <!-- Center dot -->
+  <circle cx="512" cy="512" r="22" fill="url(#hand)"/>
+
+  <!-- Hour hand (pointing to 10 — strong horizontal) -->
+  <line x1="512" y1="512" x2="332" y2="380" stroke="url(#hand)" stroke-width="28" stroke-linecap="round"/>
+
+  <!-- Minute hand (pointing to 2 — diagonal up-right) -->
+  <line x1="512" y1="512" x2="660" y2="288" stroke="#c8c4c0" stroke-width="18" stroke-linecap="round" opacity="0.85"/>
+
+  <!-- Second hand small accent -->
+  <line x1="512" y1="512" x2="540" y2="780" stroke="#8C6BBF" stroke-width="6" stroke-linecap="round" opacity="0.85"/>
+</svg>

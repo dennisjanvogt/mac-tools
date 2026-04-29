@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@source "./**/*.{ts,tsx,js,jsx,html}";
+@source "./apps/**/*.{ts,tsx}";
+@source "./stores/**/*.{ts,tsx}";
+
+/* Dark modifier always on in the standalone wrapper. */
+@custom-variant dark (&);
+
+:root { color-scheme: dark; }
+
+html, body, #root {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  color: #e5e7eb;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+/* Main app wrapper gets the tinted/frosted layer, so macOS wallpaper
+   shines through while the chrome stays readable (matches Kanban/Zeit). */
+#root > div {
+  background: rgba(16, 16, 20, 0.55) !important;
+  backdrop-filter: saturate(140%) blur(24px);
+  -webkit-backdrop-filter: saturate(140%) blur(24px);
+}
