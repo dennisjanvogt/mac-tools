@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+
+# Zeit CLI — Native SwiftUI Mac client for ConsultingOS Zeiterfassung
+# Usage: zeit [open|build|rebuild|close|logout|status|timer|start|stop|log|projects|clients|add|summary]
+
+BUNDLE="$HOME/Applications/Zeit.app"
+APP="$BUNDLE/Contents/MacOS/zeit-app"
+SRC="$HOME/.local/src/zeit"
+AUTH="$HOME/.config/zeit/auth.json"
+BASE="https://1o618.com"
+
+usage() {
+    cat <<'EOF'
+Zeit CLI
+
+Usage: zeit <command>
+
+  open    | o       Zeit öffnen (baut bei Bedarf)
+  build   | b       SwiftUI App kompilieren
+  rebuild | r       Neu bauen + öffnen
+  close   | quit    Zeit beenden
+  logout            Token löschen (erzwingt Neuanmeldung)
+  status            Login-Status zeigen
+
+  timer   | t       Laufenden Timer anzeigen
+  start   [projekt] Timer starten (optional: Projektname)
+  stop              Timer stoppen
+  log     [today|week] Zeiteinträge auflisten (Standard: today)
+  projects| p       Projekte auflisten
+  clients | c       Kunden auflisten
+  add     <projekt> <stunden> [notiz] Eintrag erstellen
+  summary [week|month] Zusammenfassung anzeigen
+EOF
+}
+
+api() {
+    local method="$1" path="$2" data="$3"
+    local token
+    token=$(python3 -c "import json; print(json.load(open('$AUTH'))['access_token'])" 2>/dev/null)
+    if [ -z "$token" ]; then echo "Nicht angemeldet." >&2; return 1; fi
+    local args=(curl -s -X "$method" -H "Authorization: Bearer $token" -H "Content-Type: application/json")
+    [ -n "$data" ] && args+=(-d "$data")
+    "${args[@]}" "${BASE}${path}"
+}
+
+cmd_timer() {
+    local resp
+    resp=$(api GET "/api/timetracking/timer/") || return 1
+    local running project desc start_ms
+    running=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('is_running',False))" 2>/dev/null)
+    if [ "$running" != "True" ]; then
+        echo "Kein Timer läuft."
+        return 0
+    fi
+    project=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('project_name','') or '-')" 2>/dev/null)
+    desc=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('description','') or '')" 2>/dev/null)
+    start_ms=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('start_time',0) or 0)" 2>/dev/null)
+    local elapsed=""
+    if [ "$start_ms" != "0" ] && [ -n "$start_ms" ]; then
+        elapsed=$(python3 -c "
+import time
+ms=int($start_ms)
+diff=int(time.time()*1000 - ms)//1000
+h,r=divmod(diff,3600)
+m,s=divmod(r,60)
+print(f'{h:02d}:{m:02d}:{s:02d}')
+" 2>/dev/null)
+    fi
+    echo "Timer läuft: $project ${elapsed:+($elapsed)}"
+    [ -n "$desc" ] && echo "  $desc"
+}
+
+cmd_start() {
+    local project_name="$1"
+    local body project_id
+    if [ -n "$project_name" ]; then
+        local projects_resp
+        projects_resp=$(api GET "/api/timetracking/projects/?status=active") || return 1
+        project_id=$(echo "$projects_resp" | python3 -c "
+import sys,json
+name='$project_name'.lower()
+projects=json.load(sys.stdin)
+for p in projects:
+    if name in p['name'].lower():
+        print(p['id']); break
+else:
+    print('')
+" 2>/dev/null)
+        if [ -z "$project_id" ]; then
+            echo "Projekt '$project_name' nicht gefunden." >&2
+            return 1
+        fi
+    fi
+    local now_ms
+    now_ms=$(python3 -c "import time; print(int(time.time()*1000))")
+    if [ -n "$project_id" ]; then
+        body="{\"project_id\": $project_id, \"is_running\": true, \"start_time\": $now_ms}"
+    else
+        body="{\"is_running\": true, \"start_time\": $now_ms}"
+    fi
+    local resp
+    resp=$(api PUT "/api/timetracking/timer/" "$body") || return 1
+    local pname
+    pname=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('project_name','') or 'ohne Projekt')" 2>/dev/null)
+    echo "Timer gestartet: $pname"
+}
+
+cmd_stop() {
+    local resp
+    resp=$(api PUT "/api/timetracking/timer/" '{"is_running": false}') || return 1
+    echo "Timer gestoppt."
+}
+
+cmd_log() {
+    local period="${1:-today}"
+    local date_from date_to
+    case "$period" in
+        today)
+            date_from=$(date +%Y-%m-%d)
+            date_to="$date_from"
+            ;;
+        week)
+            date_from=$(python3 -c "
+from datetime import date, timedelta
+d=date.today()
+print(d - timedelta(days=d.weekday()))
+")
+            date_to=$(date +%Y-%m-%d)
+            ;;
+        *)
+            echo "Nutzung: zeit log [today|week]" >&2
+            return 1
+            ;;
+    esac
+    local resp
+    resp=$(api GET "/api/timetracking/entries/?date_from=${date_from}&date_to=${date_to}") || return 1
+    python3 -c "
+import sys,json
+entries=json.load(sys.stdin)
+if not entries:
+    print('Keine Einträge.')
+    sys.exit(0)
+total=0
+cur_date=''
+for e in sorted(entries, key=lambda x: (x['date'], x['start_time'])):
+    if e['date'] != cur_date:
+        cur_date = e['date']
+        print(f'\n{cur_date}')
+        print('-' * 40)
+    proj = e.get('project_name') or '-'
+    dur = e.get('duration_minutes', 0)
+    total += dur
+    h, m = divmod(dur, 60)
+    desc = e.get('description', '')
+    line = f'  {e[\"start_time\"]}-{e[\"end_time\"]}  {h}:{m:02d}h  {proj}'
+    if desc:
+        line += f'  {desc}'
+    print(line)
+th, tm = divmod(total, 60)
+print(f'\nGesamt: {th}:{tm:02d}h')
+" <<< "$resp"
+}
+
+cmd_projects() {
+    local resp
+    resp=$(api GET "/api/timetracking/projects/?status=active") || return 1
+    python3 -c "
+import sys,json
+projects=json.load(sys.stdin)
+if not projects:
+    print('Keine Projekte.')
+    sys.exit(0)
+for p in sorted(projects, key=lambda x: x['client_name']):
+    rate = f'{p[\"hourly_rate\"]:.0f}€/h' if p['hourly_rate'] else ''
+    print(f'  [{p[\"id\"]}] {p[\"client_name\"]} / {p[\"name\"]}  {rate}')
+" <<< "$resp"
+}
+
+cmd_clients() {
+    local resp
+    resp=$(api GET "/api/timetracking/clients/") || return 1
+    python3 -c "
+import sys,json
+clients=json.load(sys.stdin)
+if not clients:
+    print('Keine Kunden.')
+    sys.exit(0)
+for c in sorted(clients, key=lambda x: x['name']):
+    company = f' ({c[\"company\"]})' if c.get('company') else ''
+    print(f'  [{c[\"id\"]}] {c[\"name\"]}{company}')
+" <<< "$resp"
+}
+
+cmd_add() {
+    local project_name="$1" hours="$2" note="${3:-}"
+    if [ -z "$project_name" ] || [ -z "$hours" ]; then
+        echo "Nutzung: zeit add <projekt> <stunden> [notiz]" >&2
+        return 1
+    fi
+    local projects_resp
+    projects_resp=$(api GET "/api/timetracking/projects/?status=active") || return 1
+    local project_id
+    project_id=$(echo "$projects_resp" | python3 -c "
+import sys,json
+name='$project_name'.lower()
+projects=json.load(sys.stdin)
+for p in projects:
+    if name in p['name'].lower():
+        print(p['id']); break
+else:
+    print('')
+" 2>/dev/null)
+    if [ -z "$project_id" ]; then
+        echo "Projekt '$project_name' nicht gefunden." >&2
+        return 1
+    fi
+    local today start_time end_time
+    today=$(date +%Y-%m-%d)
+    start_time="09:00"
+    end_time=$(python3 -c "
+h=float($hours)
+start_h, start_m = 9, 0
+total_min = int(h * 60)
+end_min = start_h * 60 + start_m + total_min
+eh, em = divmod(end_min, 60)
+print(f'{eh:02d}:{em:02d}')
+")
+    local body
+    body=$(python3 -c "
+import json
+d = {
+    'date': '$today',
+    'start_time': '$start_time',
+    'end_time': '$end_time',
+    'description': '''$note''',
+    'billable': True,
+    'activity_type': '',
+    'project': $project_id
+}
+print(json.dumps(d))
+")
+    local resp
+    resp=$(api POST "/api/timetracking/entries/" "$body") || return 1
+    local entry_id
+    entry_id=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id','?'))" 2>/dev/null)
+    echo "Eintrag #${entry_id} erstellt: ${hours}h für $project_name"
+}
+
+cmd_summary() {
+    local period="${1:-week}"
+    local date_from date_to
+    case "$period" in
+        week)
+            date_from=$(python3 -c "
+from datetime import date, timedelta
+d=date.today()
+print(d - timedelta(days=d.weekday()))
+")
+            date_to=$(date +%Y-%m-%d)
+            ;;
+        month)
+            date_from=$(date +%Y-%m-01)
+            date_to=$(date +%Y-%m-%d)
+            ;;
+        *)
+            echo "Nutzung: zeit summary [week|month]" >&2
+            return 1
+            ;;
+    esac
+    local resp
+    resp=$(api GET "/api/timetracking/summary/?date_from=${date_from}&date_to=${date_to}") || return 1
+    python3 -c "
+import sys,json
+s=json.load(sys.stdin)
+print(f'Zeitraum: $date_from bis $date_to')
+print(f'Gesamt: {s[\"total_hours\"]:.1f}h  |  {s[\"total_revenue\"]:.2f}€  |  {s[\"entries_count\"]} Einträge')
+if s.get('by_project'):
+    print()
+    print('Nach Projekt:')
+    for p in s['by_project']:
+        rev = f'  {p[\"revenue\"]:.2f}€' if p.get('revenue') else ''
+        print(f'  {p[\"project_name\"]}: {p[\"hours\"]:.1f}h{rev}')
+if s.get('by_client'):
+    print()
+    print('Nach Kunde:')
+    for c in s['by_client']:
+        print(f'  {c[\"client_name\"]}: {c[\"hours\"]:.1f}h')
+" <<< "$resp"
+}
+
+build() {
+    echo "Kompiliere Zeit..."
+    mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+    swiftc -parse-as-library -O \
+        -framework SwiftUI -framework AppKit \
+        "$SRC/main.swift" -o "$APP" 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Build fehlgeschlagen"
+        exit 1
+    fi
+
+    cat > "$BUNDLE/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.dennis.zeit</string>
+    <key>CFBundleName</key>
+    <string>Zeit</string>
+    <key>CFBundleDisplayName</key>
+    <string>Zeit</string>
+    <key>CFBundleExecutable</key>
+    <string>zeit-app</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+    if [ -f "$SRC/AppIcon.icns" ]; then
+        cp "$SRC/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+    fi
+
+    codesign -f -s - "$BUNDLE" 2>/dev/null
+    echo "Build OK: $BUNDLE"
+}
+
+case "${1:-open}" in
+    open|o)
+        [ ! -f "$APP" ] && build
+        open "$BUNDLE"
+        ;;
+    build|b)
+        build
+        ;;
+    rebuild|r)
+        pkill -x zeit-app 2>/dev/null
+        build && open "$BUNDLE"
+        ;;
+    close|quit|q)
+        pkill -x zeit-app 2>/dev/null
+        echo "Zeit geschlossen"
+        ;;
+    logout)
+        rm -f "$HOME/.config/zeit/auth.json"
+        echo "Token gelöscht"
+        ;;
+    status)
+        if [ -f "$HOME/.config/zeit/auth.json" ]; then
+            echo "Eingeloggt (Token vorhanden)"
+        else
+            echo "Nicht eingeloggt"
+        fi
+        ;;
+    timer|t)
+        cmd_timer
+        ;;
+    start)
+        cmd_start "$2"
+        ;;
+    stop)
+        cmd_stop
+        ;;
+    log|l)
+        cmd_log "$2"
+        ;;
+    projects|p)
+        cmd_projects
+        ;;
+    clients|c)
+        cmd_clients
+        ;;
+    add|a)
+        cmd_add "$2" "$3" "$4"
+        ;;
+    summary|s)
+        cmd_summary "$2"
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac

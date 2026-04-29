@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+
+# Tafel CLI — Native SwiftUI Mac client for ConsultingOS Whiteboard (Excalidraw)
+# Usage: tafel [open|build|rebuild|close|logout|status|list|new|rm]
+
+BUNDLE="$HOME/Applications/Tafel.app"
+APP="$BUNDLE/Contents/MacOS/tafel-app"
+SRC="$HOME/.local/src/tafel"
+
+usage() {
+    cat <<'EOF'
+Tafel CLI
+
+Usage: tafel <command>
+
+  open    | o       Tafel öffnen (baut bei Bedarf)
+  build   | b       SwiftUI App kompilieren
+  rebuild | r       Neu bauen + öffnen
+  close   | quit    Tafel beenden
+  logout            Token löschen (shared keychain — betrifft auch Kanban/Zeit!)
+  status            Login-Status zeigen
+
+  list    | ls      Diagramme auflisten
+  projects| p       Projekte auflisten
+  new     | n       Neues Diagramm <titel> [projektname]
+  rm                Diagramm löschen <id>
+EOF
+}
+
+build() {
+    echo "Kompiliere Tafel..."
+    mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+    swiftc -parse-as-library -O \
+        -framework SwiftUI -framework AppKit -framework WebKit \
+        "$SRC/main.swift" -o "$APP" 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Build fehlgeschlagen"
+        exit 1
+    fi
+
+    cat > "$BUNDLE/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.dennis.tafel</string>
+    <key>CFBundleName</key>
+    <string>Tafel</string>
+    <key>CFBundleDisplayName</key>
+    <string>Tafel</string>
+    <key>CFBundleExecutable</key>
+    <string>tafel-app</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+    if [ -f "$SRC/AppIcon.icns" ]; then
+        cp "$SRC/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+    fi
+
+    codesign -f -s - "$BUNDLE" 2>/dev/null
+    echo "Build OK: $BUNDLE"
+}
+
+get_token() {
+    security find-generic-password -s com.dennis.consultingos -a default -w 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read().strip())
+    print(d['access_token'])
+except Exception:
+    pass
+"
+}
+
+api() {
+    local method="$1" path="$2" data="$3"
+    local token
+    token=$(get_token)
+    if [ -z "$token" ]; then
+        echo "Nicht angemeldet. Tafel-App öffnen und einloggen." >&2
+        return 1
+    fi
+    local args=(curl -s -X "$method" -H "Authorization: Bearer $token" -H "Content-Type: application/json")
+    [ -n "$data" ] && args+=(-d "$data")
+    "${args[@]}" "https://1o618.com${path}"
+}
+
+case "${1:-open}" in
+    open|o)
+        [ ! -f "$APP" ] && build
+        open "$BUNDLE"
+        ;;
+    build|b)
+        build
+        ;;
+    rebuild|r)
+        pkill -x tafel-app 2>/dev/null
+        sleep 0.4
+        build
+        open "$BUNDLE"
+        ;;
+    close|quit)
+        pkill -x tafel-app 2>/dev/null
+        echo "Tafel geschlossen"
+        ;;
+    logout)
+        security delete-generic-password -s com.dennis.consultingos -a default >/dev/null 2>&1
+        echo "Abgemeldet (shared keychain — betrifft auch Kanban/Zeit/Canwa!)"
+        ;;
+    status)
+        if [ -n "$(get_token)" ]; then
+            echo "Eingeloggt (Token vorhanden)"
+        else
+            echo "Nicht angemeldet."
+        fi
+        ;;
+    list|ls)
+        data=$(api GET "/api/whiteboard/") || exit 1
+        echo "$data" | python3 -c "
+import sys, json
+try:
+    items = json.load(sys.stdin)
+except Exception:
+    print('(keine Daten)'); sys.exit(0)
+if not items:
+    print('Keine Diagramme.'); sys.exit(0)
+for d in items:
+    shared = ' [geteilt]' if d.get('is_shared') else ''
+    pid = f' · project:{d[\"project_id\"]}' if d.get('project_id') else ''
+    print(f'  [{d[\"id\"]:>4}] {d[\"title\"]}{pid}{shared}')
+"
+        ;;
+    projects|p)
+        data=$(api GET "/api/whiteboard/projects") || exit 1
+        echo "$data" | python3 -c "
+import sys, json
+try:
+    items = json.load(sys.stdin)
+except Exception:
+    print('(keine Daten)'); sys.exit(0)
+if not items:
+    print('Keine Projekte.'); sys.exit(0)
+for p in items:
+    print(f'  [{p[\"id\"]:>4}] {p[\"name\"]}  ({p[\"diagram_count\"]} Diagramme)')
+"
+        ;;
+    new|n)
+        [ -z "$2" ] && { echo "Nutzung: tafel new <titel> [projektname]" >&2; exit 1; }
+        title="$2"
+        pname="$3"
+        pid_flag=""
+        if [ -n "$pname" ]; then
+            projects_json=$(api GET "/api/whiteboard/projects") || exit 1
+            pid=$(echo "$projects_json" | python3 -c "
+import sys, json
+pname = sys.argv[1].lower()
+for p in json.load(sys.stdin):
+    if pname in p['name'].lower():
+        print(p['id']); break
+" "$pname" 2>/dev/null)
+            [ -n "$pid" ] && pid_flag=", \"project_id\": $pid"
+        fi
+        body="{\"title\": $(python3 -c "import sys,json; print(json.dumps(sys.argv[1]))" "$title")$pid_flag}"
+        resp=$(api POST "/api/whiteboard/" "$body") || exit 1
+        echo "$resp" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f'Erstellt: [{d[\"id\"]}] {d[\"title\"]}')
+"
+        ;;
+    rm)
+        [ -z "$2" ] && { echo "Nutzung: tafel rm <id>" >&2; exit 1; }
+        api DELETE "/api/whiteboard/$2" >/dev/null
+        echo "Gelöscht: #$2"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

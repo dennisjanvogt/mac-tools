@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+
+# Canwa CLI — ConsultingOS Bildeditor (native shell + WKWebView hosting React bundle)
+# Usage: canwa [open|build|rebuild|close|logout|status|web]
+
+BUNDLE="$HOME/Applications/Canwa.app"
+APP="$BUNDLE/Contents/MacOS/canwa-app"
+SRC="$HOME/.local/src/canwa"
+WEB_SRC="$HOME/.local/src/canwa-web"
+WEB_DIST="$WEB_SRC/dist"
+
+usage() {
+    cat <<'EOF'
+Canwa CLI — Bildeditor
+
+Usage: canwa <command>
+
+  open    | o       Canwa öffnen (baut bei Bedarf)
+  build   | b       Web-Bundle + SwiftUI App bauen
+  rebuild | r       Neu bauen + öffnen
+  web     | w       Nur Web-Bundle bauen (Vite)
+  close   | quit    Canwa beenden
+  logout            Shared keychain löschen (betrifft alle ConsultingOS-Apps!)
+  status            Login-Status zeigen
+EOF
+}
+
+build_web() {
+    if [ ! -d "$WEB_SRC/node_modules" ]; then
+        echo "Installiere npm-Dependencies (einmalig)…"
+        (cd "$WEB_SRC" && npm install) || { echo "npm install fehlgeschlagen"; return 1; }
+    fi
+    echo "Baue Web-Bundle (Vite)…"
+    (cd "$WEB_SRC" && npx vite build) || { echo "Web-Build fehlgeschlagen"; return 1; }
+}
+
+build_swift() {
+    echo "Kompiliere Canwa…"
+    mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources/web"
+    swiftc -parse-as-library -O \
+        -framework SwiftUI -framework AppKit -framework WebKit \
+        "$SRC/main.swift" -o "$APP" 2>&1 || { echo "Swift-Build fehlgeschlagen"; return 1; }
+
+    # Copy web bundle into app Resources
+    if [ -d "$WEB_DIST" ]; then
+        rm -rf "$BUNDLE/Contents/Resources/web"
+        mkdir -p "$BUNDLE/Contents/Resources/web"
+        cp -R "$WEB_DIST/." "$BUNDLE/Contents/Resources/web/"
+    else
+        echo "Warnung: Web-Dist fehlt. Bitte 'canwa web' zuerst." >&2
+    fi
+
+    cat > "$BUNDLE/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>com.dennis.canwa</string>
+    <key>CFBundleName</key><string>Canwa</string>
+    <key>CFBundleDisplayName</key><string>Canwa</string>
+    <key>CFBundleExecutable</key><string>canwa-app</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleVersion</key><string>1.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>NSAppTransportSecurity</key>
+    <dict><key>NSAllowsArbitraryLoads</key><false/></dict>
+</dict>
+</plist>
+PLIST
+    [ -f "$SRC/AppIcon.icns" ] && cp "$SRC/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+    codesign -f -s - "$BUNDLE" 2>/dev/null
+    echo "Build OK: $BUNDLE"
+}
+
+get_token() {
+    security find-generic-password -s com.dennis.consultingos -a default -w 2>/dev/null | python3 -c "
+import sys, json
+try: print(json.loads(sys.stdin.read().strip())['access_token'])
+except: pass
+"
+}
+
+case "${1:-open}" in
+    open|o)
+        if [ ! -f "$APP" ]; then
+            build_web && build_swift
+        fi
+        open "$BUNDLE"
+        ;;
+    build|b)
+        build_web && build_swift
+        ;;
+    rebuild|r)
+        pkill -x canwa-app 2>/dev/null
+        sleep 0.4
+        build_web && build_swift && open "$BUNDLE"
+        ;;
+    web|w)
+        build_web
+        ;;
+    close|quit)
+        pkill -x canwa-app 2>/dev/null
+        echo "Canwa geschlossen"
+        ;;
+    logout)
+        security delete-generic-password -s com.dennis.consultingos -a default >/dev/null 2>&1
+        echo "Abgemeldet (shared keychain gelöscht)"
+        ;;
+    status)
+        if [ -n "$(get_token)" ]; then echo "Eingeloggt (Token vorhanden)"
+        else echo "Nicht angemeldet."; fi
+        ;;
+    help|--help|-h) usage ;;
+    *) echo "Unbekannter Befehl: $1"; usage; exit 1 ;;
+esac

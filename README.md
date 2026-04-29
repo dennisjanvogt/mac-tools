@@ -1,6 +1,6 @@
 # mac-tools
 
-A collection of small CLI tools I use on macOS — short shell/Python scripts that wrap common workflows: Bluetooth, audio, Wi-Fi, displays, DNS, YouTube downloads, notes, speech-to-text, system info, scene presets, academic papers, image generation, local LLM chat.
+A collection of small CLI tools I use on macOS — short shell/Python scripts that wrap common workflows: Bluetooth, audio, Wi-Fi, displays, DNS, YouTube downloads, notes, speech-to-text, system info, scene presets, academic papers, image generation, local LLM chat, plus CLI shells for a personal SwiftUI app suite (`dash`, `kanban`, `tafel`, `zeit`, `canwa`, `literatur`, `termine`).
 
 > The scripts print German UI text (Hilfe, Statusmeldungen). Commands and flags are English. If you don't read German you'll still figure it out from the help screens.
 
@@ -60,6 +60,22 @@ Run `<tool> help` (or `--help`) on any of these for the full command list.
 | `translate` | `transformers`, `sentencepiece`, `torch` | Many-to-many translation via mBART-50. |
 | `generate-image` | `diffusers`, `torch` | Stable Diffusion 3 Medium image generation. |
 | `llama` | `transformers`, `torch` | Local Llama 3.2-3B chat. |
+
+### ConsultingOS apps
+
+CLI wrappers for a personal SwiftUI app suite that talks to my private API at `1o618.com`. **They will not work for you out of the box** — they need both the SwiftUI source code (not in this repo, expected at `~/.local/src/<name>/`) and access to the backend. They're published as a reference for anyone wanting to wrap a custom SaaS in CLI shells: keychain-shared auth across apps, `swiftc` build pipeline from a single `main.swift`, simple REST clients in pure bash.
+
+| Tool | What it does |
+| --- | --- |
+| `dash` | Dashboard cards (weather, stocks, crypto, wiki, news, image search, YouTube tiles, Kanban sync, system stats). Reads `SERPER_API_KEY` from `~/.config/keys/search.env` for search-related cards. |
+| `kanban` | Kanban board: list cards, todo/in-progress filter, add, move, done, archive, rm. |
+| `tafel` | Whiteboard (Excalidraw) frontend: list/new/rm diagrams, list projects. |
+| `zeit` | Time tracking: start/stop timer, log, projects, clients, add manual entry, weekly/monthly summary. |
+| `canwa` | Image editor (SwiftUI shell hosting a Vite/React bundle in WKWebView). |
+| `literatur` | Literature/PDF reader. |
+| `termine` | Calendar/appointments: list (today/week/month), next, add, rm. |
+
+Shared keychain: `com.dennis.consultingos`. Logging out of any one app logs out of all of them.
 
 ## Dependencies in one shot
 

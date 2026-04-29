@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+
+# Literatur CLI — Native SwiftUI Mac client for ConsultingOS Literature
+# Usage: literatur [open|build|rebuild|close|logout|status]
+
+BUNDLE="$HOME/Applications/Literatur.app"
+APP="$BUNDLE/Contents/MacOS/literatur-app"
+SRC="$HOME/.local/src/literatur"
+
+usage() {
+    cat <<'EOF'
+Literatur CLI
+
+Usage: literatur <command>
+
+  open    | o       Literatur öffnen (baut bei Bedarf)
+  build   | b       SwiftUI App kompilieren
+  rebuild | r       Neu bauen + öffnen
+  close   | quit    Literatur beenden
+  logout            Token aus Keychain löschen (auch für andere Apps)
+  status            Login-Status zeigen
+EOF
+}
+
+build() {
+    echo "Kompiliere Literatur..."
+    mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+    swiftc -parse-as-library -O \
+        -framework SwiftUI -framework AppKit -framework PDFKit \
+        "$SRC/main.swift" -o "$APP" 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Build fehlgeschlagen"
+        exit 1
+    fi
+
+    cat > "$BUNDLE/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.dennis.consultingos.literatur</string>
+    <key>CFBundleName</key>
+    <string>Literatur</string>
+    <key>CFBundleDisplayName</key>
+    <string>Literatur</string>
+    <key>CFBundleExecutable</key>
+    <string>literatur-app</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+    if [ -f "$SRC/AppIcon.icns" ]; then
+        cp "$SRC/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+    fi
+
+    codesign -f -s - "$BUNDLE" 2>/dev/null
+    echo "Build OK: $BUNDLE"
+}
+
+case "${1:-open}" in
+    open|o)
+        [ ! -f "$APP" ] && build
+        open "$BUNDLE"
+        ;;
+    build|b)
+        build
+        ;;
+    rebuild|r)
+        pkill -x literatur-app 2>/dev/null
+        build && open "$BUNDLE"
+        ;;
+    close|quit|q)
+        pkill -x literatur-app 2>/dev/null
+        echo "Literatur geschlossen"
+        ;;
+    logout)
+        security delete-generic-password -s "com.dennis.consultingos" -a "default" 2>/dev/null
+        echo "Token aus Keychain gelöscht (gilt auch für Kanban + Zeit + Termine)"
+        ;;
+    status)
+        if security find-generic-password -s "com.dennis.consultingos" -a "default" >/dev/null 2>&1; then
+            echo "Eingeloggt (Keychain-Token vorhanden)"
+        else
+            echo "Nicht eingeloggt"
+        fi
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac

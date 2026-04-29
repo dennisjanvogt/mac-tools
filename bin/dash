@@ -1,0 +1,770 @@
+#!/usr/bin/env bash
+
+# Dashboard CLI — Push cards to the native SwiftUI dashboard
+# Usage: dash [command] [args]
+
+APP="$HOME/Applications/Dashboard.app/Contents/MacOS/dashboard-app"
+BUNDLE="$HOME/Applications/Dashboard.app"
+SRC="$HOME/.local/src/dashboard"
+CARDS="$HOME/.config/dashboard/cards.json"
+
+mkdir -p "$(dirname "$CARDS")"
+[ -f "$CARDS" ] || echo '{"cards":[]}' > "$CARDS"
+
+usage() {
+    cat <<'EOF'
+Dashboard CLI
+
+Usage: dash <command> [args]
+
+Dashboard:
+  open                  Dashboard öffnen (mit System-Status)
+  close                 Dashboard schließen
+
+Cards:
+  add <titel> <inhalt>  Card hinzufügen
+  add -c <farbe> -i <icon> <titel> <inhalt>
+  rm <id|titel>         Card entfernen
+  clear                 Alle Cards entfernen
+  list                  Alle Cards auflisten
+
+Abfragen:
+  weather [ort]         Wetter + 5-Tage Vorhersage
+  stock <symbol>        Aktienkurs (z.B. AAPL, TSLA)
+  crypto <coin>         Kryptopreis (z.B. bitcoin, ethereum)
+  wiki <begriff>        Wikipedia-Zusammenfassung
+  search <query>        Websuche (Serper)
+  news [query]          Aktuelle Nachrichten
+  images <query>        Bildersuche (Google)
+  youtube <url|query>   YouTube-Video als Tile streamen
+  youtube -d <url|q>    Video <=720p offline downloaden
+  kanban                Aktuelle Todos + Doing aus Kanban-App
+  system                Live CPU / RAM / Disk Stats
+  tv                    TV-Fernbedienung (Power, Volume, Apps)
+  ask <frage>           Claude beantworten lassen
+
+System:
+  status                System-Status Cards generieren
+  build                 SwiftUI App kompilieren
+
+Farben: red, blue, green, gold, purple, orange, cyan, lavender, teal, amber, rose
+Icons:  Beliebige SF Symbols (z.B. cpu, wifi, bolt, doc)
+
+Kurzformen: o=open, a=add, r=rm, s=status, l=list, w=weather
+EOF
+}
+
+# Generate a short ID
+genid() { echo "c$(date +%s%N | shasum | head -c 6)"; }
+
+# Read current cards
+read_cards() { cat "$CARDS" 2>/dev/null || echo '{"cards":[]}'; }
+
+# Write cards
+write_cards() { echo "$1" > "$CARDS"; }
+
+# Add a card via python (safe JSON handling)
+add_card() {
+    local title="$1" content="$2" icon="${3:-info.circle}" color="${4:-blue}" id="${5:-$(genid)}"
+    python3 -c "
+import json, sys
+f='$CARDS'
+try:
+    d=json.load(open(f))
+except: d={'cards':[]}
+d['cards'].append({'id':'$id','title':'''$title''','content':'''$(echo "$content" | sed "s/'/'\\''/g")''','icon':'$icon','color':'$color'})
+json.dump(d,open(f,'w'),ensure_ascii=False,indent=2)
+print('Card: $title')
+"
+}
+
+# Remove a card
+rm_card() {
+    local query="$1"
+    python3 -c "
+import json
+f='$CARDS'
+d=json.load(open(f))
+before=len(d['cards'])
+d['cards']=[c for c in d['cards'] if c['id']!='$query' and c['title'].lower()!='$query'.lower()]
+after=len(d['cards'])
+json.dump(d,open(f,'w'),ensure_ascii=False,indent=2)
+print(f'Entfernt: {before-after} Card(s)')
+"
+}
+
+# Generate system status cards
+gen_status() {
+    python3 << 'PYEOF'
+import json, subprocess, os
+
+def run(cmd):
+    try: return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, timeout=5).decode().strip()
+    except: return ""
+
+import re
+
+details = []
+
+# CPU
+cpu = run("top -l 1 -n 0 | grep 'CPU usage'")
+if cpu:
+    m = re.search(r'(\d+\.\d+)% user.*?(\d+\.\d+)% sys.*?(\d+\.\d+)% idle', cpu)
+    if m:
+        used = f"{float(m.group(1))+float(m.group(2)):.0f}"
+        details.append(f"CPU|{used}%")
+
+# RAM
+total_ram = int(run("sysctl -n hw.memsize") or 0)
+mem = run("vm_stat")
+if mem and total_ram:
+    pages = dict(re.findall(r'^(.+?):\s+(\d+)', mem, re.MULTILINE))
+    ps = 16384
+    active = int(pages.get('Pages active','0'))
+    wired = int(pages.get('Pages wired down','0'))
+    used_gb = (active + wired) * ps / 1e9
+    total_gb = total_ram / 1e9
+    details.append(f"RAM|{used_gb:.0f}/{total_gb:.0f} GB")
+
+# Disk
+disk = run("df -H / | tail -1")
+if disk:
+    parts = disk.split()
+    if len(parts) > 4:
+        details.append(f"Disk|{parts[3]} frei")
+
+# Audio
+out = run("SwitchAudioSource -c -t output 2>/dev/null")
+vol = run("osascript -e 'output volume of (get volume settings)' 2>/dev/null")
+if out:
+    short = out[:20] + "…" if len(out) > 20 else out
+    details.append(f"Audio|{short}")
+
+# Uptime
+up = run("uptime | sed 's/.*up //' | sed 's/,.*//'")
+if up:
+    details.append(f"Uptime|{up.strip()[:15]}")
+
+# BT Battery
+bt = run("system_profiler SPBluetoothDataType 2>/dev/null")
+batts = re.findall(r'Battery Level:\s*(\d+)\s*%', bt)
+if batts:
+    details.append(f"BT Akku|{batts[0]}%")
+
+card = {"id":"sys_info","title":"System","content":"","icon":"desktopcomputer","color":"lavender","type":"weather","emoji":"💻","metric":"MacBook Pro","details":details}
+
+f = os.path.expanduser("~/.config/dashboard/cards.json")
+try: existing = json.load(open(f))
+except: existing = {"cards":[]}
+old_sys = {"sys_info","sys_audio","sys_bt","sys_disk","sys_cpu","sys_ram","sys_up"}
+existing["cards"] = [c for c in existing["cards"] if c["id"] not in old_sys] + [card]
+json.dump(existing, open(f, "w"), ensure_ascii=False, indent=2)
+print("System-Card aktualisiert")
+PYEOF
+}
+
+build() {
+    echo "Kompiliere..."
+    mkdir -p "$BUNDLE/Contents/MacOS"
+    swiftc -parse-as-library -O -framework SwiftUI \
+        "$SRC/main.swift" -o "$APP" 2>&1
+    if [ $? -eq 0 ]; then
+        # Info.plist
+        cat > "$BUNDLE/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.dennis.dashboard</string>
+    <key>CFBundleName</key>
+    <string>Dashboard</string>
+    <key>CFBundleExecutable</key>
+    <string>dashboard-app</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+</dict>
+</plist>
+PLIST
+        mkdir -p "$BUNDLE/Contents/Resources"
+        if [ -f "$HOME/.local/src/dashboard/AppIcon.icns" ]; then
+            cp "$HOME/.local/src/dashboard/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+        fi
+        codesign -f -s - "$BUNDLE" 2>/dev/null
+        echo "Build OK: $BUNDLE"
+    else
+        echo "Build fehlgeschlagen"
+        exit 1
+    fi
+}
+
+case "${1:-open}" in
+    open|o)
+        if [ ! -f "$APP" ]; then
+            build
+        fi
+        open "$BUNDLE"
+        ;;
+    close)
+        pkill -x dashboard-app 2>/dev/null
+        echo "Dashboard geschlossen"
+        ;;
+    add|a)
+        shift
+        color="blue"; icon="info.circle"
+        while [[ "$1" == -* ]]; do
+            case "$1" in
+                -c|--color) color="$2"; shift 2 ;;
+                -i|--icon)  icon="$2"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        title="$1"; shift
+        content="$*"
+        [ -z "$title" ] && echo "Usage: dash add [-c farbe] [-i icon] <titel> <inhalt>" && exit 1
+        add_card "$title" "$content" "$icon" "$color"
+        ;;
+    rm|r)
+        [ -z "$2" ] && echo "Usage: dash rm <id oder titel>" && exit 1
+        rm_card "$2"
+        ;;
+    clear)
+        echo '{"cards":[]}' > "$CARDS"
+        echo "Alle Cards entfernt"
+        ;;
+    list|l)
+        python3 -c "
+import json
+d=json.load(open('$CARDS'))
+if not d['cards']:
+    print('Keine Cards.')
+else:
+    for c in d['cards']:
+        print(f'  [{c[\"color\"]:6s}] {c[\"title\"]:15s} {c[\"content\"][:50]}')
+"
+        ;;
+    status|s)
+        gen_status
+        ;;
+    weather|w)
+        shift
+        city="${*:-Dortmund}"
+        python3 << PYEOF
+import json, subprocess, os
+
+def fetch(url):
+    r = subprocess.run(["curl", "-s", "--max-time", "8", url], capture_output=True, text=True)
+    return json.loads(r.stdout)
+
+city = "$city"
+import urllib.parse
+geo = fetch(f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city)}&count=1&language=de")
+if not geo.get("results"):
+    print(f"Ort nicht gefunden: {city}"); exit(1)
+loc = geo["results"][0]
+lat, lon, name = loc["latitude"], loc["longitude"], loc.get("name", city)
+
+url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code&timezone=auto&forecast_days=5"
+w = fetch(url)
+c = w["current"]
+d = w["daily"]
+
+wmo = {0:"☀️",1:"🌤",2:"⛅",3:"☁️",45:"🌫",48:"🌫",51:"🌦",53:"🌧",55:"🌧",61:"🌧",63:"🌧",65:"🌧",71:"🌨",73:"🌨",75:"🌨",80:"🌦",81:"🌧",82:"🌧",95:"⛈",96:"⛈",99:"⛈"}
+icon = wmo.get(c.get("weather_code",0),"🌡")
+
+# Weather conditions text
+wmo_text = {0:"Klar",1:"Überwiegend klar",2:"Teilweise bewölkt",3:"Bewölkt",45:"Nebel",48:"Nebel",51:"Nieselregen",53:"Nieselregen",55:"Nieselregen",61:"Leichter Regen",63:"Regen",65:"Starkregen",71:"Leichter Schnee",73:"Schnee",75:"Starker Schnee",80:"Regenschauer",81:"Regenschauer",82:"Starke Schauer",95:"Gewitter",96:"Gewitter",99:"Gewitter"}
+condition = wmo_text.get(c.get("weather_code",0),"")
+
+details = [
+    f"Wind|{c['wind_speed_10m']} km/h",
+    f"Feuchte|{c['relative_humidity_2m']}%",
+    f"Heute|{d['temperature_2m_min'][0]:.0f}–{d['temperature_2m_max'][0]:.0f}°C",
+]
+
+# Forecast as structured details: "emoji|day|lo|hi|rain"
+forecast_details = []
+weekdays = {"Monday":"Mo","Tuesday":"Di","Wednesday":"Mi","Thursday":"Do","Friday":"Fr","Saturday":"Sa","Sunday":"So"}
+import datetime
+for i in range(min(5, len(d["time"]))):
+    dt = datetime.date.fromisoformat(d["time"][i])
+    day_en = dt.strftime("%A")
+    day_de = weekdays.get(day_en, day_en[:2])
+    hi = d["temperature_2m_max"][i]
+    lo = d["temperature_2m_min"][i]
+    rain = d["precipitation_sum"][i]
+    di = wmo.get(d["weather_code"][i],"🌡")
+    forecast_details.append(f"{di}|{day_de}|{lo:.0f}|{hi:.0f}|{rain:.0f}")
+
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+import time as _t, datetime as _dt
+_ts = str(_t.time_ns())
+_now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+data["cards"].append({"id":f"weather_{_ts}","title":f"Wetter {name}","content":condition,"icon":"cloud.sun","color":"blue","type":"weather","metric":f'{c["temperature_2m"]}°C',"emoji":icon,"details":details,"timestamp":_now})
+data["cards"].append({"id":f"forecast_{_ts}","title":f"5-Tage {name}","content":"","details":forecast_details,"icon":"calendar","color":"cyan","type":"forecast","timestamp":_now})
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print(f"Wetter für {name} geladen")
+PYEOF
+        ;;
+    stock)
+        [ -z "$2" ] && echo "Usage: dash stock <symbol>" && exit 1
+        symbol=$(echo "$2" | tr '[:lower:]' '[:upper:]')
+        python3 << PYEOF
+import json, subprocess, os
+
+def fetch(url):
+    r = subprocess.run(["curl", "-s", "--max-time", "8", "-H", "User-Agent: Mozilla/5.0", url], capture_output=True, text=True)
+    return json.loads(r.stdout)
+
+symbol = "$symbol"
+# Fetch 3 month history for chart
+try:
+    raw = fetch(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=3mo&interval=1d")
+except Exception as e:
+    print(f"Fehler: {e}"); exit(1)
+
+r = raw.get("chart",{}).get("result",[])
+if not r:
+    print(f"Aktie nicht gefunden: {symbol}"); exit(1)
+
+meta = r[0].get("meta",{})
+price = meta.get("regularMarketPrice", 0)
+prev = meta.get("chartPreviousClose", price)
+change = price - prev
+pct = (change / prev * 100) if prev else 0
+currency = meta.get("currency","USD")
+name = meta.get("shortName", symbol)
+
+# Extract closing prices for sparkline
+closes = r[0].get("indicators",{}).get("quote",[{}])[0].get("close",[])
+chart_data = [c for c in closes if c is not None][-60:]  # last 60 data points
+
+arrow = "↑" if change >= 0 else "↓"
+col = "green" if change >= 0 else "red"
+
+content = f'{arrow} {change:+.2f} ({pct:+.1f}%)\nVortag: {prev:.2f} {currency}'
+
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+cid = f"stock_{symbol}"
+cid = cid + "_" + str(__import__('time').time_ns())
+logo_map = {"AAPL":"apple.com","MSFT":"microsoft.com","GOOGL":"google.com","AMZN":"amazon.com","TSLA":"tesla.com","NVDA":"nvidia.com","META":"meta.com","NFLX":"netflix.com","GOOG":"google.com","AMD":"amd.com","INTC":"intel.com","CRM":"salesforce.com","ORCL":"oracle.com","UBER":"uber.com","SPOT":"spotify.com","SHOP":"shopify.com","SQ":"squareup.com","PYPL":"paypal.com","COIN":"coinbase.com","DIS":"disney.com","BA":"boeing.com"}
+domain = logo_map.get(symbol, meta.get('exchangeName','').lower().replace(' ','')+'.com')
+cache_dir = os.path.expanduser("~/.cache/dashboard")
+os.makedirs(cache_dir, exist_ok=True)
+logo_path = f"{cache_dir}/stock_{symbol}.png"
+if not os.path.exists(logo_path):
+    subprocess.run(["curl","-sL","--max-time","5",f"https://icon.horse/icon/{domain}","-o",logo_path], capture_output=True)
+logo_url = f"file://{logo_path}" if os.path.exists(logo_path) and os.path.getsize(logo_path)>100 else ""
+import datetime as _dt
+_now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+card = {"id":cid,"title":name,"content":content,"icon":"chart.line.uptrend.xyaxis","color":col,"type":"stock","metric":f'{price:.2f} {currency}',"sub":symbol,"timestamp":_now}
+if logo_url: card["images"] = [logo_url]
+if chart_data: card["details"] = [str(round(v,2)) for v in chart_data]
+data["cards"].append(card)
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print(f"{symbol}: {price:.2f} {currency} ({pct:+.1f}%)")
+PYEOF
+        ;;
+    crypto)
+        [ -z "$2" ] && echo "Usage: dash crypto <coin>" && exit 1
+        coin=$(echo "$2" | tr '[:upper:]' '[:lower:]')
+        python3 << PYEOF
+import json, subprocess, os
+
+def fetch(url):
+    r = subprocess.run(["curl", "-s", "--max-time", "8", "-H", "User-Agent: Mozilla/5.0", url], capture_output=True, text=True)
+    return json.loads(r.stdout)
+
+coin = "$coin"
+try:
+    d = fetch(f"https://api.coingecko.com/api/v3/coins/{coin}?localization=false&tickers=false&community_data=false&developer_data=false")
+except Exception as e:
+    print(f"Fehler: {e}"); exit(1)
+
+if "error" in d:
+    print(f"Coin nicht gefunden: {coin}"); exit(1)
+
+md = d.get("market_data",{})
+price = md.get("current_price",{}).get("eur",0)
+change = md.get("price_change_percentage_24h",0)
+mcap = md.get("market_cap",{}).get("eur",0)
+name = d.get("name", coin)
+sym = d.get("symbol","").upper()
+
+arrow = "↑" if change >= 0 else "↓"
+col = "green" if change >= 0 else "red"
+
+if mcap >= 1e9: mcap_s = f'{mcap/1e9:.1f} Mrd €'
+elif mcap >= 1e6: mcap_s = f'{mcap/1e6:.0f} Mio €'
+else: mcap_s = f'{mcap:.0f} €'
+
+content = f'{arrow} {change:+.1f}% (24h)\nMarktkapitalisierung: {mcap_s}'
+
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+cid = f"crypto_{coin}"
+cid = cid + "_" + str(__import__('time').time_ns())
+coin_img_url = d.get("image",{}).get("small","")
+cache_dir = os.path.expanduser("~/.cache/dashboard")
+os.makedirs(cache_dir, exist_ok=True)
+logo_path = f"{cache_dir}/crypto_{coin}.png"
+if not os.path.exists(logo_path) and coin_img_url:
+    subprocess.run(["curl","-s","--max-time","5",coin_img_url,"-o",logo_path], capture_output=True)
+logo_url = f"file://{logo_path}" if os.path.exists(logo_path) and os.path.getsize(logo_path)>100 else coin_img_url
+import datetime as _dt
+_now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+data["cards"].append({"id":cid,"title":name,"content":content,"icon":"bitcoinsign.circle","color":col,"type":"metric","metric":f'{price:,.2f} €',"sub":sym,"images":[logo_url] if logo_url else [],"timestamp":_now})
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print(f"{name}: {price:,.2f} € ({change:+.1f}%)")
+PYEOF
+        ;;
+    wiki)
+        [ -z "$2" ] && echo "Usage: dash wiki <suchbegriff>" && exit 1
+        shift
+        query="$*"
+        python3 << PYEOF
+import json, subprocess, urllib.parse, os
+
+def fetch(url):
+    r = subprocess.run(["curl", "-s", "--max-time", "8", "-H", "User-Agent: Mozilla/5.0", url], capture_output=True, text=True)
+    return json.loads(r.stdout)
+
+query = "$query"
+try:
+    d = fetch(f"https://de.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(query)}")
+except:
+    print(f"Nicht gefunden: {query}"); exit(1)
+
+title = d.get("title", query)
+extract = d.get("extract", "Kein Inhalt.")
+
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+cid = f"wiki_{title.lower().replace(' ','_')[:20]}"
+cid = cid + "_" + str(__import__('time').time_ns())
+data["cards"].append({"id":cid,"title":title,"content":extract[:300],"icon":"book","color":"lavender","type":"info","sub":"Wikipedia"})
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print(f"Wikipedia: {title}")
+PYEOF
+        ;;
+    search)
+        [ -z "$2" ] && echo "Usage: dash search <query>" && exit 1
+        shift
+        query="$*"
+        python3 << PYEOF
+import json, subprocess, os
+
+key = open(os.path.expanduser("~/.config/keys/search.env")).read()
+serper = [l.split("=",1)[1] for l in key.strip().split("\n") if l.startswith("SERPER_API_KEY")][0]
+
+r = subprocess.run(["curl", "-s", "--max-time", "8",
+    "https://google.serper.dev/search",
+    "-H", f"X-API-KEY: {serper}",
+    "-H", "Content-Type: application/json",
+    "-d", json.dumps({"q": "$query", "gl": "de", "hl": "de", "num": 6})
+], capture_output=True, text=True)
+d = json.loads(r.stdout)
+
+items = []
+for r in d.get("organic", [])[:6]:
+    title = r.get("title","")
+    snippet = r.get("snippet","")
+    link = r.get("link","")
+    items.append(f"{title}\n{snippet}")
+
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+cid = "search_" + "$query".replace(" ","_")[:15]
+cid = cid + "_" + str(__import__('time').time_ns())
+data["cards"].append({"id":cid,"title":"Suche: $query","content":"","items":items,"icon":"magnifyingglass","color":"lavender","type":"list","sub":f'{len(items)} Ergebnisse'})
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print(f"Suche: {len(items)} Ergebnisse")
+PYEOF
+        ;;
+    news)
+        [ -z "$2" ] && echo "Usage: dash news [query]" && exit 1
+        shift
+        query="${*:-Deutschland}"
+        python3 << PYEOF
+import json, subprocess, os
+
+key = open(os.path.expanduser("~/.config/keys/search.env")).read()
+serper = [l.split("=",1)[1] for l in key.strip().split("\n") if l.startswith("SERPER_API_KEY")][0]
+
+r = subprocess.run(["curl", "-s", "--max-time", "8",
+    "https://google.serper.dev/news",
+    "-H", f"X-API-KEY: {serper}",
+    "-H", "Content-Type: application/json",
+    "-d", json.dumps({"q": "$query", "gl": "de", "hl": "de", "num": 6})
+], capture_output=True, text=True)
+d = json.loads(r.stdout)
+
+items = []
+for r in d.get("news", [])[:6]:
+    title = r.get("title","")
+    source = r.get("source","")
+    date = r.get("date","")
+    items.append(f"{title}\n{source} · {date}")
+
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+cid = "news_" + "$query".replace(" ","_")[:15]
+cid = cid + "_" + str(__import__('time').time_ns())
+data["cards"].append({"id":cid,"title":"News: $query","content":"","items":items,"icon":"newspaper","color":"rose","type":"list","sub":f'{len(items)} Artikel'})
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print(f"News: {len(items)} Artikel")
+PYEOF
+        ;;
+    images)
+        [ -z "$2" ] && echo "Usage: dash images <query>" && exit 1
+        shift
+        query="$*"
+        python3 << PYEOF
+import json, subprocess, os, urllib.parse
+
+key_file = open(os.path.expanduser("~/.config/keys/search.env")).read()
+keys = dict(l.split("=",1) for l in key_file.strip().split("\n") if "=" in l)
+serper = keys.get("SERPER_API_KEY","")
+
+r = subprocess.run(["curl", "-s", "--max-time", "8",
+    "https://google.serper.dev/images",
+    "-H", f"X-API-KEY: {serper}",
+    "-H", "Content-Type: application/json",
+    "-d", json.dumps({"q": "$query", "gl": "de", "num": 6})
+], capture_output=True, text=True)
+d = json.loads(r.stdout)
+
+items = []
+for img in d.get("images", [])[:6]:
+    title = img.get("title","")[:60]
+    link = img.get("imageUrl","")
+    items.append(f"{title}\n{link}")
+
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+cid = "img_" + "$query".replace(" ","_")[:15]
+cid = cid + "_" + str(__import__('time').time_ns())
+img_urls = [img.get("imageUrl","") for img in d.get("images",[])[:6] if img.get("imageUrl")]
+data["cards"].append({"id":cid,"title":"Bilder: $query","content":"","images":img_urls,"icon":"photo.on.rectangle","color":"teal","type":"image","sub":f'{len(img_urls)} Bilder'})
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print(f"Bilder: {len(items)} gefunden")
+PYEOF
+        ;;
+    youtube|yt)
+        shift
+        download=0
+        if [ "$1" = "-d" ] || [ "$1" = "--download" ]; then
+            download=1; shift
+        fi
+        [ -z "$1" ] && echo "Usage: dash youtube [-d] <url|suchbegriff>" && exit 1
+        input="$*"
+        DOWNLOAD=$download python3 << PYEOF
+import json, os, re, subprocess, time
+
+inp = """$input""".strip()
+download = os.environ.get("DOWNLOAD") == "1"
+
+def extract_id(s):
+    s = s.strip()
+    pats = [
+        r"(?:youtube\.com/watch\?[^#]*v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/|youtube\.com/live/)([A-Za-z0-9_-]{11})",
+        r"^([A-Za-z0-9_-]{11})$",
+    ]
+    for p in pats:
+        m = re.search(p, s)
+        if m: return m.group(1)
+    return None
+
+vid = extract_id(inp)
+title = None
+channel = None
+stream = None
+downloaded_path = None
+
+target = f"https://www.youtube.com/watch?v={vid}" if vid else f"ytsearch1:{inp}"
+# Progressive (single-file) formats only — AVPlayer needs a direct MP4 url; HLS from
+# googlevideo renders audio-only in AVPlayer on macOS. itag 18 is the only reliable
+# progressive MP4 with audio+video on YouTube (360p avc1+AAC).
+stream_fmt = "18/best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none]/best[acodec!=none][vcodec!=none]"
+# For explicit downloads we can merge streams and go higher.
+dl_fmt = "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/b[height<=1080]"
+
+try:
+    r = subprocess.run(
+        ["yt-dlp", "--skip-download", "--no-warnings",
+         "-f", stream_fmt,
+         "--print", "%(id)s\t%(title)s\t%(uploader)s\t%(url)s",
+         target],
+        capture_output=True, text=True, timeout=30
+    )
+    line = (r.stdout or "").strip().split("\n")[0]
+    parts = line.split("\t")
+    if len(parts) >= 1 and parts[0]:
+        vid = parts[0]
+        if len(parts) > 1: title = parts[1]
+        if len(parts) > 2: channel = parts[2]
+        if len(parts) > 3: stream = parts[3].split("\n")[0]
+except Exception as e:
+    print(f"yt-dlp Fehler: {e}"); raise SystemExit(1)
+
+if not vid:
+    print(f"Kein Video gefunden: {inp}"); raise SystemExit(1)
+
+if download:
+    dl_dir = os.path.expanduser("~/.cache/dashboard/youtube")
+    os.makedirs(dl_dir, exist_ok=True)
+    out_tmpl = os.path.join(dl_dir, f"{vid}.%(ext)s")
+    print(f"Download {vid} (<=720p)...")
+    r = subprocess.run(
+        ["yt-dlp", "--no-warnings", "--no-progress",
+         "-f", dl_fmt,
+         "--merge-output-format", "mp4",
+         "-o", out_tmpl,
+         f"https://www.youtube.com/watch?v={vid}"],
+        capture_output=True, text=True, timeout=600
+    )
+    if r.returncode != 0:
+        print("Download fehlgeschlagen:")
+        print(r.stderr[-500:])
+        raise SystemExit(1)
+    for ext in ("mp4", "mkv", "webm", "m4a"):
+        cand = os.path.join(dl_dir, f"{vid}.{ext}")
+        if os.path.exists(cand):
+            downloaded_path = cand
+            break
+    if not downloaded_path:
+        print("Download-Datei nicht gefunden"); raise SystemExit(1)
+    stream = f"file://{downloaded_path}"
+elif not stream:
+    print(f"Keine Stream-URL aufgelöst für {vid}"); raise SystemExit(1)
+
+if not title: title = inp
+
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+
+import datetime as _dt
+now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+cid = f"youtube_{vid}_{time.time_ns()}"
+card = {
+    "id": cid,
+    "title": title[:80],
+    "content": "offline" if downloaded_path else "stream",
+    "icon": "arrow.down.circle.fill" if downloaded_path else "play.rectangle.fill",
+    "color": "green" if downloaded_path else "red",
+    "type": "youtube",
+    "videoId": vid,
+    "streamUrl": stream,
+    "timestamp": now,
+}
+if channel: card["sub"] = channel
+data["cards"].append(card)
+json.dump(data, open(f, "w"), ensure_ascii=False, indent=2)
+print(f"YouTube: {title} ({vid})")
+PYEOF
+        ;;
+    kanban|k)
+        python3 << PYEOF
+import json, os
+from datetime import datetime, timezone
+
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+# Replace existing kanban card
+data["cards"] = [c for c in data["cards"] if c.get("id") != "kanban_sync"]
+data["cards"].append({
+    "id": "kanban_sync",
+    "title": "Kanban",
+    "content": "",
+    "items": [],
+    "icon": "checklist",
+    "color": "purple",
+    "type": "kanban",
+    "sub": "",
+    "timestamp": datetime.now(timezone.utc).isoformat(),
+})
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print("Kanban-Card hinzugefügt (live sync)")
+PYEOF
+        ;;
+    system|sys)
+        python3 << PYEOF
+import json, os
+from datetime import datetime, timezone
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+data["cards"] = [c for c in data["cards"] if c.get("id") != "system_live"]
+data["cards"].append({
+    "id": "system_live",
+    "title": "System",
+    "content": "",
+    "icon": "cpu",
+    "color": "cyan",
+    "type": "system",
+    "timestamp": datetime.now(timezone.utc).isoformat(),
+})
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print("System-Card hinzugefügt (live)")
+PYEOF
+        ;;
+    tv|remote)
+        python3 << PYEOF
+import json, os
+from datetime import datetime, timezone
+f = os.path.expanduser("$CARDS")
+try: data = json.load(open(f))
+except: data = {"cards":[]}
+data["cards"] = [c for c in data["cards"] if c.get("id") != "tv_control"]
+data["cards"].append({
+    "id": "tv_control",
+    "title": "LG TV",
+    "content": "",
+    "icon": "tv",
+    "color": "lavender",
+    "type": "tv",
+    "timestamp": datetime.now(timezone.utc).isoformat(),
+})
+json.dump(data, open(f,"w"), ensure_ascii=False, indent=2)
+print("TV-Card hinzugefügt")
+PYEOF
+        ;;
+    ask)
+        [ -z "$2" ] && echo "Usage: dash ask <frage>" && exit 1
+        shift
+        query="$*"
+        echo "Frage: $query"
+        result=$(claude -p "Beantworte kurz (max 3 Sätze, Deutsch): $query" --max-turns 1 --output-format text 2>/dev/null)
+        if [ -n "$result" ]; then
+            add_card "Antwort" "$result" "sparkles" "lavender" "ask_$(date +%s)"
+        else
+            echo "Keine Antwort erhalten"
+        fi
+        ;;
+    build|b)
+        build
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unbekannter Befehl: $1"
+        usage
+        exit 1
+        ;;
+esac

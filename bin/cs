@@ -108,6 +108,14 @@ add tools translate "mBART translate"
 add tools generate-image "SD3 image gen"
 add tools llama "Llama 3.2 chat"
 
+add cos dash "Dashboard cards"
+add cos kanban "Kanban board"
+add cos tafel "Whiteboard"
+add cos zeit "Zeiterfassung"
+add cos canwa "Bildeditor"
+add cos literatur "Literatur"
+add cos termine "Termine"
+
 # Read section files into arrays
 read_section() {
     local file="$TMP/$1"
@@ -148,7 +156,7 @@ echo ""
 print_block "DEVELOPMENT" dev "AI & LLM" ai "CONTAINER & CLOUD" cloud
 print_block "EDITORS" edit "SEARCH & TEXT" search "NETWORK" net
 print_block "DATABASE" db "SYSTEM & GIT" sys "MEDIA & CUSTOM" media
-print_block "SMART HOME" smart "CUSTOM TOOLS" tools "  " empty
+print_block "SMART HOME" smart "CUSTOM TOOLS" tools "CONSULTINGOS" cos
 
 # Cleanup
 rm -rf "$TMP"

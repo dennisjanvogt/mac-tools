@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+
+# Termine CLI — Native SwiftUI Mac client for ConsultingOS Termine
+# Usage: termine [open|build|rebuild|close|logout|status|list|today|next|add|rm]
+
+API_BASE="https://1o618.com"
+BUNDLE="$HOME/Applications/Termine.app"
+APP="$BUNDLE/Contents/MacOS/termine-app"
+SRC="$HOME/.local/src/termine"
+AUTH_JSON="$HOME/.config/termine/auth.json"
+
+usage() {
+    cat <<'EOF'
+Termine CLI
+
+Usage: termine <command>
+
+  open    | o       Termine öffnen (baut bei Bedarf)
+  build   | b       SwiftUI App kompilieren
+  rebuild | r       Neu bauen + öffnen
+  close   | quit    Termine beenden
+  logout            Token aus Keychain löschen (auch für Kanban + Zeit)
+  status            Login-Status zeigen
+
+  list [today|week|month]   Termine auflisten (Standard: week)
+  today                     Termine heute
+  next                      Nächster Termin
+  add <titel> <DD.MM.YYYY> <HH:MM> [-c client] [-d dauer_min]
+                            Termin erstellen
+  rm <event_id>             Termin löschen
+EOF
+}
+
+# --- Auth & API helpers ---
+
+get_token() {
+    # Try keychain first (shared with Kanban + Zeit)
+    local kc_data
+    kc_data=$(security find-generic-password -s "com.dennis.consultingos" -a "default" -w 2>/dev/null)
+    if [ -n "$kc_data" ]; then
+        echo "$kc_data" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])" 2>/dev/null && return 0
+    fi
+    # Fallback: auth.json
+    if [ -f "$AUTH_JSON" ]; then
+        python3 -c "import json; print(json.load(open('$AUTH_JSON'))['access_token'])" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
+api() {
+    local method="$1" path="$2" data="$3"
+    local token
+    token=$(get_token)
+    if [ -z "$token" ]; then echo "Nicht angemeldet." >&2; return 1; fi
+    local args=(curl -s -X "$method" -H "Authorization: Bearer $token" -H "Content-Type: application/json")
+    [ -n "$data" ] && args+=(-d "$data")
+    "${args[@]}" "${API_BASE}${path}"
+}
+
+# --- Date helpers ---
+
+date_today() { date +%Y-%m-%d; }
+
+date_add_days() { date -v+"${1}d" +%Y-%m-%d; }
+
+monday_of_week() {
+    local dow
+    dow=$(date +%u)  # 1=Mon .. 7=Sun
+    date -v-"$((dow - 1))d" +%Y-%m-%d
+}
+
+sunday_of_week() {
+    local dow
+    dow=$(date +%u)
+    date -v+"$((7 - dow))d" +%Y-%m-%d
+}
+
+first_of_month() { date +%Y-%m-01; }
+
+last_of_month() { date -v1d -v+1m -v-1d +%Y-%m-%d; }
+
+# Convert DD.MM.YYYY -> YYYY-MM-DD
+parse_date() {
+    local d="$1"
+    if [[ "$d" =~ ^([0-9]{2})\.([0-9]{2})\.([0-9]{4})$ ]]; then
+        echo "${BASH_REMATCH[3]}-${BASH_REMATCH[2]}-${BASH_REMATCH[1]}"
+    else
+        echo "$d"
+    fi
+}
+
+# Convert YYYY-MM-DD -> DD.MM.YYYY
+format_date() {
+    local d="$1"
+    if [[ "$d" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]]; then
+        echo "${BASH_REMATCH[3]}.${BASH_REMATCH[2]}.${BASH_REMATCH[1]}"
+    else
+        echo "$d"
+    fi
+}
+
+# --- Appointment commands ---
+
+cmd_list() {
+    local range="${1:-week}"
+    local start_date end_date
+    case "$range" in
+        today|heute)
+            start_date=$(date_today)
+            end_date=$(date_today)
+            ;;
+        week|woche)
+            start_date=$(monday_of_week)
+            end_date=$(sunday_of_week)
+            ;;
+        month|monat)
+            start_date=$(first_of_month)
+            end_date=$(last_of_month)
+            ;;
+        *)
+            echo "Unbekannter Zeitraum: $range (today|week|month)" >&2
+            return 1
+            ;;
+    esac
+
+    local resp
+    resp=$(api GET "/api/termine/?start_date=${start_date}&end_date=${end_date}&include_past=true")
+    [ $? -ne 0 ] && return 1
+
+    local count
+    count=$(echo "$resp" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null)
+    if [ "$count" = "0" ] || [ -z "$count" ]; then
+        echo "Keine Termine."
+        return 0
+    fi
+
+    echo "$resp" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+data.sort(key=lambda a: (a['event']['date'], a['event']['start_time']))
+for a in data:
+    e = a['event']
+    d = e['date']
+    dd = d[8:10] + '.' + d[5:7] + '.' + d[0:4]
+    client = a.get('client_name') or ''
+    client_str = f'  [{client}]' if client else ''
+    print(f\"  {dd}  {e['start_time']}-{e['end_time']}  {e['title']}{client_str}  (id:{a['event_id']})\")
+"
+}
+
+cmd_next() {
+    local today
+    today=$(date_today)
+    local now
+    now=$(date +%H:%M)
+    # Fetch next 7 days
+    local end_date
+    end_date=$(date_add_days 30)
+
+    local resp
+    resp=$(api GET "/api/termine/?start_date=${today}&end_date=${end_date}&include_past=false")
+    [ $? -ne 0 ] && return 1
+
+    echo "$resp" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+if not data:
+    print('Kein kommender Termin.')
+    sys.exit(0)
+data.sort(key=lambda a: (a['event']['date'], a['event']['start_time']))
+now_date = '${today}'
+now_time = '${now}'
+upcoming = [a for a in data if (a['event']['date'], a['event']['start_time']) >= (now_date, now_time)]
+if not upcoming:
+    upcoming = [a for a in data if a['event']['date'] > now_date]
+if not upcoming:
+    print('Kein kommender Termin.')
+    sys.exit(0)
+a = upcoming[0]
+e = a['event']
+d = e['date']
+dd = d[8:10] + '.' + d[5:7] + '.' + d[0:4]
+client = a.get('client_name') or ''
+client_str = f'  [{client}]' if client else ''
+loc = e.get('location', '')
+loc_str = f'  @ {loc}' if loc else ''
+print(f\"  {dd}  {e['start_time']}-{e['end_time']}  {e['title']}{client_str}{loc_str}  (id:{a['event_id']})\")
+"
+}
+
+cmd_add() {
+    local title="$1" datum="$2" uhrzeit="$3"
+    shift 3 2>/dev/null
+    if [ -z "$title" ] || [ -z "$datum" ] || [ -z "$uhrzeit" ]; then
+        echo "Usage: termine add <titel> <DD.MM.YYYY> <HH:MM> [-c client] [-d dauer_min]" >&2
+        return 1
+    fi
+
+    local client="" dauer="60"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -c) client="$2"; shift 2 ;;
+            -d) dauer="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local iso_date
+    iso_date=$(parse_date "$datum")
+    local start_time="$uhrzeit"
+
+    # Calculate end_time from start + duration
+    local end_time
+    end_time=$(python3 -c "
+h, m = map(int, '${start_time}'.split(':'))
+total = h * 60 + m + ${dauer}
+print(f'{total // 60:02d}:{total % 60:02d}')
+")
+
+    local body
+    body=$(python3 -c "
+import json
+d = {
+    'title': '${title}',
+    'date': '${iso_date}',
+    'start_time': '${start_time}',
+    'end_time': '${end_time}',
+    'location': '',
+    'color': 'blue',
+    'is_meeting': False,
+}
+print(json.dumps(d))
+")
+
+    local resp
+    resp=$(api POST "/api/termine/" "$body")
+    [ $? -ne 0 ] && return 1
+
+    local event_id
+    event_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('event_id',''))" 2>/dev/null)
+    if [ -z "$event_id" ]; then
+        echo "Fehler beim Erstellen." >&2
+        echo "$resp" >&2
+        return 1
+    fi
+
+    echo "Termin erstellt: $title ($datum $uhrzeit, ${dauer} min) — id:$event_id"
+}
+
+cmd_rm() {
+    local event_id="$1"
+    if [ -z "$event_id" ]; then
+        echo "Usage: termine rm <event_id>" >&2
+        return 1
+    fi
+
+    local resp
+    resp=$(api DELETE "/api/termine/${event_id}")
+    [ $? -ne 0 ] && return 1
+    echo "Termin $event_id gelöscht."
+}
+
+build() {
+    echo "Kompiliere Termine..."
+    mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+    swiftc -parse-as-library -O \
+        -framework SwiftUI -framework AppKit \
+        "$SRC/main.swift" -o "$APP" 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Build fehlgeschlagen"
+        exit 1
+    fi
+
+    cat > "$BUNDLE/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.dennis.consultingos.termine</string>
+    <key>CFBundleName</key>
+    <string>Termine</string>
+    <key>CFBundleDisplayName</key>
+    <string>Termine</string>
+    <key>CFBundleExecutable</key>
+    <string>termine-app</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+    if [ -f "$SRC/AppIcon.icns" ]; then
+        cp "$SRC/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+    fi
+
+    codesign -f -s - "$BUNDLE" 2>/dev/null
+    echo "Build OK: $BUNDLE"
+}
+
+case "${1:-open}" in
+    open|o)
+        [ ! -f "$APP" ] && build
+        open "$BUNDLE"
+        ;;
+    build|b)
+        build
+        ;;
+    rebuild|r)
+        pkill -x termine-app 2>/dev/null
+        build && open "$BUNDLE"
+        ;;
+    close|quit|q)
+        pkill -x termine-app 2>/dev/null
+        echo "Termine geschlossen"
+        ;;
+    logout)
+        security delete-generic-password -s "com.dennis.consultingos" -a "default" 2>/dev/null
+        echo "Token aus Keychain gelöscht (gilt auch für Kanban + Zeit)"
+        ;;
+    status)
+        if security find-generic-password -s "com.dennis.consultingos" -a "default" >/dev/null 2>&1; then
+            echo "Eingeloggt (Keychain-Token vorhanden)"
+        else
+            echo "Nicht eingeloggt"
+        fi
+        ;;
+    list|l)
+        cmd_list "${2:-week}"
+        ;;
+    today|heute)
+        cmd_list today
+        ;;
+    next|n)
+        cmd_next
+        ;;
+    add|a)
+        shift; cmd_add "$@"
+        ;;
+    rm|delete|d)
+        cmd_rm "$2"
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac

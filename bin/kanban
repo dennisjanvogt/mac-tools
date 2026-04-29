@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+
+# Kanban CLI — Native SwiftUI Mac client for ConsultingOS Kanban
+# Usage: kanban [open|build|rebuild|close|logout]
+
+BUNDLE="$HOME/Applications/Kanban.app"
+APP="$BUNDLE/Contents/MacOS/kanban-app"
+SRC="$HOME/.local/src/kanban"
+
+usage() {
+    cat <<'EOF'
+Kanban CLI
+
+Usage: kanban <command>
+
+  open    | o       Kanban öffnen (baut bei Bedarf)
+  build   | b       SwiftUI App kompilieren
+  rebuild | r       Neu bauen + öffnen
+  close   | quit    Kanban beenden
+  logout            Token löschen (erzwingt Neuanmeldung)
+  status            Login-Status zeigen
+
+  list    | ls      Karten auflisten [board]
+  todo    | t       Nur todo + in_progress zeigen [board]
+  add     | a       Karte erstellen <title> [-b board] [-c column] [-p priority] [-d desc]
+  move    | m       Karte verschieben <id> <column>
+  done              Karte auf done setzen <id>
+  rm                Karte löschen <id>
+  archive           Karte archivieren <id>
+EOF
+}
+
+build() {
+    echo "Kompiliere Kanban..."
+    mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+    swiftc -parse-as-library -O \
+        -framework SwiftUI -framework AppKit \
+        "$SRC/main.swift" -o "$APP" 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Build fehlgeschlagen"
+        exit 1
+    fi
+
+    cat > "$BUNDLE/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.dennis.kanban</string>
+    <key>CFBundleName</key>
+    <string>Kanban</string>
+    <key>CFBundleDisplayName</key>
+    <string>Kanban</string>
+    <key>CFBundleExecutable</key>
+    <string>kanban-app</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+    if [ -f "$SRC/AppIcon.icns" ]; then
+        cp "$SRC/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+    fi
+
+    codesign -f -s - "$BUNDLE" 2>/dev/null
+    echo "Build OK: $BUNDLE"
+}
+
+api() {
+    local method="$1" path="$2" data="$3"
+    local token
+    token=$(python3 -c "import json; print(json.load(open('$HOME/.config/kanban/auth.json'))['access_token'])" 2>/dev/null)
+    if [ -z "$token" ]; then echo "Nicht angemeldet. Kanban-App öffnen und einloggen." >&2; return 1; fi
+    local args=(curl -s -X "$method" -H "Authorization: Bearer $token" -H "Content-Type: application/json")
+    [ -n "$data" ] && args+=(-d "$data")
+    "${args[@]}" "https://1o618.com${path}"
+}
+
+list_cards() {
+    local board="${1:-work}"
+    local data
+    data=$(api GET /api/kanban/) || return 1
+    echo "$data" | python3 -c "
+import json, sys
+cards = json.load(sys.stdin)
+board = sys.argv[1]
+for col, header in [('backlog','Backlog'),('todo','To Do'),('in_progress','In Progress'),('done','Done')]:
+    filtered = [c for c in cards if c['board'] == board and c['column'] == col]
+    filtered.sort(key=lambda c: c.get('position', 0))
+    print(f'── {header} ──')
+    for c in filtered:
+        prio = c.get('priority', 'medium')
+        proj = c.get('project_name') or ''
+        proj = f' ({proj})' if proj else ''
+        print(f'  [{prio}] {c[\"title\"]}{proj}  #{c[\"id\"]}')
+    if not filtered:
+        print('  (leer)')
+" "$board" 2>/dev/null
+}
+
+todo_cards() {
+    local board="${1:-work}"
+    local data
+    data=$(api GET /api/kanban/) || return 1
+    echo "$data" | python3 -c "
+import json, sys
+cards = json.load(sys.stdin)
+board = sys.argv[1]
+for col, header in [('todo', 'To Do'), ('in_progress', 'In Progress')]:
+    filtered = [c for c in cards if c['board'] == board and c['column'] == col]
+    filtered.sort(key=lambda c: c.get('position', 0))
+    print(f'── {header} ──')
+    for c in filtered:
+        prio = c.get('priority', 'medium')
+        proj = c.get('project_name') or ''
+        proj = f' ({proj})' if proj else ''
+        print(f'  [{prio}] {c[\"title\"]}{proj}  #{c[\"id\"]}')
+    if not filtered:
+        print('  (leer)')
+" "$board" 2>/dev/null
+}
+
+case "${1:-open}" in
+    open|o)
+        [ ! -f "$APP" ] && build
+        open "$BUNDLE"
+        ;;
+    build|b)
+        build
+        ;;
+    rebuild|r)
+        pkill -x kanban-app 2>/dev/null
+        build && open "$BUNDLE"
+        ;;
+    close|quit|q)
+        pkill -x kanban-app 2>/dev/null
+        echo "Kanban geschlossen"
+        ;;
+    logout)
+        rm -f "$HOME/.config/kanban/auth.json"
+        echo "Token gelöscht"
+        ;;
+    status)
+        if [ -f "$HOME/.config/kanban/auth.json" ]; then
+            echo "Eingeloggt (Token vorhanden)"
+        else
+            echo "Nicht eingeloggt"
+        fi
+        ;;
+    list|ls)
+        list_cards "${2:-work}"
+        ;;
+    todo|t)
+        todo_cards "${2:-work}"
+        ;;
+    add|a)
+        shift
+        title="" board="work" column="todo" priority="medium" desc=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -b) board="$2"; shift 2 ;;
+                -c) column="$2"; shift 2 ;;
+                -p) priority="$2"; shift 2 ;;
+                -d) desc="$2"; shift 2 ;;
+                *)  [ -z "$title" ] && title="$1" || title="$title $1"; shift ;;
+            esac
+        done
+        if [ -z "$title" ]; then echo "Usage: kanban add <title> [-b board] [-c column] [-p priority] [-d desc]"; exit 1; fi
+        body=$(python3 -c "
+import json, sys
+d = {'title': sys.argv[1], 'board': sys.argv[2], 'column': sys.argv[3], 'priority': sys.argv[4]}
+if sys.argv[5]: d['description'] = sys.argv[5]
+print(json.dumps(d))
+" "$title" "$board" "$column" "$priority" "$desc")
+        result=$(api POST /api/kanban/ "$body") || exit 1
+        echo "Karte erstellt: $title"
+        echo "$result" | python3 -c "import json,sys; c=json.load(sys.stdin); print(f'  #{c[\"id\"]} [{c[\"priority\"]}] {c[\"column\"]}')" 2>/dev/null
+        ;;
+    move|m)
+        id="$2" col="$3"
+        if [ -z "$id" ] || [ -z "$col" ]; then echo "Usage: kanban move <id> <column>"; exit 1; fi
+        [ "$col" = "doing" ] && col="in_progress"
+        result=$(api POST "/api/kanban/${id}/move" "{\"column\":\"$col\"}") || exit 1
+        echo "Karte #$id nach $col verschoben"
+        ;;
+    done)
+        id="$2"
+        if [ -z "$id" ]; then echo "Usage: kanban done <id>"; exit 1; fi
+        result=$(api POST "/api/kanban/${id}/move" '{"column":"done"}') || exit 1
+        echo "Karte #$id erledigt"
+        ;;
+    rm)
+        id="$2"
+        if [ -z "$id" ]; then echo "Usage: kanban rm <id>"; exit 1; fi
+        api DELETE "/api/kanban/${id}" > /dev/null || exit 1
+        echo "Karte #$id gelöscht"
+        ;;
+    archive)
+        id="$2"
+        if [ -z "$id" ]; then echo "Usage: kanban archive <id>"; exit 1; fi
+        api POST "/api/kanban/${id}/archive" > /dev/null || exit 1
+        echo "Karte #$id archiviert"
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac
